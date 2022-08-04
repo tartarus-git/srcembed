@@ -1,0 +1,21 @@
+#!/bin/bash
+
+script_dir_path=$(dirname $0)
+# the docs about the test command are kind of bad, they don't say that -a is deprecated and doesn't work sometimes.
+# you should never use -a
+# NOTE: Also, always remember to put your variables in quotes, because if you don't and they have spaces in them, that
+# could split one arg into two and wreck havoc on your script.
+if [ ! -f "$script_dir_path/bin/srcembed" ]; then
+	echo 'ERROR: no binaries to install'
+	exit
+fi
+read -p "installation directory: " install_dir
+if [ ! -d "$install_dir" ]; then
+	echo 'ERROR: the provided installation directory does not exist'
+	exit
+fi
+if [ -e "$install_dir/srcembed" ]; then
+	echo 'ERROR: namespace conflict in installation directory, file already exists'
+	exit
+fi
+cp "$script_dir_path/bin/srcembed" "$install_dir/srcembed"
