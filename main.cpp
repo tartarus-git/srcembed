@@ -2,10 +2,15 @@
 #include <cstdlib>		// for std::exit(), EXIT_SUCCESS and EXIT_FAILURE
 #include <cstring>		// for std::strcmp()
 
+#ifndef PLATFORM_WINDOWS
 // NOTE: Linux says to use BUFSIZ here, because that's supposed to be optimized.
 // NOTE: Instead of that, we're using the default buffer size for pipes on Linux, since the I/O
 // is going to be piped most of the time. I've had way better luck with this number than with BUFSIZ, at least for this application.
 #define BUFFER_SIZE 65536
+#else
+// NOTE: I'm going to stick with BUFSIZ for Windows, since I don't know what the default pipe buffer size is.
+#define BUFFER_SIZE BUFSIZ
+#endif
 
 const char helpText[] = "usage: srcembed [--help] || ([--varname <variable name>] <language>)\n" \
 			"\n" \
