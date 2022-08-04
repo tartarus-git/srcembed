@@ -1,13 +1,11 @@
-#ifndef PLATFORM_WINDOWS
-#include <fcntl.h>		// for readahead()
-#include <unistd.h>		// for STDIN_FILENO
-#endif
-
-#include <iostream>		// for I/O
+#include <cstdio>		// for I/O
 #include <cstdlib>		// for std::exit(), EXIT_SUCCESS and EXIT_FAILURE
 #include <cstring>		// for std::strcmp()
-#include <new>			// for non-throwing new
-#include <cstdio>		// for EOF
+
+// NOTE: Linux says to use BUFSIZ here, because that's supposed to be optimized.
+// NOTE: Instead of that, we're using the default buffer size for pipes on Linux, since the I/O
+// is going to be piped most of the time. I've had way better luck with this number than with BUFSIZ, at least for this application.
+#define BUFFER_SIZE 65536
 
 const char helpText[] = "usage: srcembed [--help] || ([--varname <variable name>] <language>)\n" \
 			"\n" \
@@ -22,69 +20,108 @@ const char helpText[] = "usage: srcembed [--help] || ([--varname <variable name>
 				"\tc++\n" \
 				"\tc\n";
 
-void output_C_CPP_array_data() noexcept {
-	int byte = std::cin.get();
-	if (byte == EOF) {
-		std::cerr << "ERROR: no data received, language requires data\n"; std::exit(EXIT_SUCCESS);
+template <size_t message_length>
+void writeError(const char (&message)[message_length]) noexcept {
+	if (std::fwrite(message, sizeof(char), message_length, stderr) == 0) { std::exit(EXIT_FAILURE); }
+}
+
+template <size_t message_length>
+void writeOutput(const char (&message)[message_length]) noexcept {
+	if (std::fwrite(message, sizeof(char), message_length, stdout) == 0) {
+		writeError("ERROR: failed to write to stdout\n");
+		std::exit(EXIT_FAILURE);
 	}
-	std::cout << byte;
+}
+
+void output_C_CPP_array_data() noexcept {
+	unsigned char buffer[8];
+
+	if (std::fread(buffer, sizeof(char), 1, stdin) == 0) {
+		if (std::ferror(stdin)) { writeError("ERROR: failed to read from stdin\n"); std::exit(EXIT_FAILURE); }
+		writeError("ERROR: no data received, language requires data\n"); std::exit(EXIT_SUCCESS);
+	}
+	std::printf("%u", buffer[0]);
+
 	while (true) {
-		byte = std::cin.get();
-		if (byte == EOF) { break; }
-		std::cout << ", " << byte;
+		size_t bytesRead = std::fread(buffer, sizeof(char), sizeof(buffer), stdin);
+		if (bytesRead == 0) {
+			if (std::ferror(stdin)) { writeError("ERROR: failed to read from stdin\n"); std::exit(EXIT_FAILURE); }
+			break;
+		}
+		if (bytesRead >= sizeof(buffer)) {
+			if (std::printf(", %u, %u, %u, %u, %u, %u, %u, %u", 
+					buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7]) < 0) {
+				writeError("ERROR: failed to write to stdout\n");
+				std::exit(EXIT_FAILURE);
+			}
+			continue;
+		}
+		for (char i = 0; i < bytesRead; i++) {
+			if (std::printf(", %u", buffer[i]) < 0) {
+				writeError("ERROR: failed to write to stdout\n");
+				std::exit(EXIT_FAILURE);
+			}
+		}
+		return;
 	}
 }
 
 void outputSource(const char* varname, const char* language) noexcept {
-	if (std::cout.bad()) { std::cerr << "ERROR: output to stdout failed\n"; std::exit(EXIT_FAILURE); }
-
 	if (std::strcmp(language, "c++") == 0) {
-		std::cout << "const char " << varname << "[] { ";
+		std::printf("const char %s[] { ", varname);
 		output_C_CPP_array_data();
-		std::cout << " };\n";
+		writeOutput(" };\n");
 		return;
 	}
 	if (std::strcmp(language, "c") == 0) {
-		std::cout << "const char " << varname << "[] = { ";
+		std::printf("const char %s[] = { ", varname);
 		output_C_CPP_array_data();
-		std::cout << " };\n";
+		writeOutput(" };\n");
 		return;
 	}
 
-	std::cerr << "ERROR: invalid language\n"; std::exit(EXIT_SUCCESS);
+	writeOutput("ERROR: invalid language\n"); std::exit(EXIT_SUCCESS);
 }
 
 int main(int argc, const char* const * argv) noexcept {
-#ifndef PLATFORM_WINDOWS
-	readahead(STDIN_FILENO, 0, (size_t)-1);
 	/*
-	NOTE: The above usually doesn't work since stdin is usually the tty or a pipe. If it were a normal file though,
-	then the above call would actually be super important. It tells the OS to read ahead in the file and
-	preemptively cache the disk sectors. This makes it so we get almost no cache-misses if we read the file
-	sequentially, which we do. When you pipe a file into a command in bash though, it goes through a pipe first,
-	so this is rarely applicable. We have it just in case though.
+	NOTE: Linux has this cool readahead functionality that reads the disk ahead and minimizes cache-misses when you read sequentially.
+	I can't really use the function here though because it only works on normal (and maybe a couple other) file-types.
+	I could still put it in just in case stdin happens to be a supported file-type, but you have to specify a maximum amount
+	of bytes that you want to read, which doesn't work here since we have no idea how many bytes we're going to be reading.
+	You also can't just put in the maximum number for size_t because then it fails for some reason.
+	NOTE: I guess we could test if stdin is a file, then find out how big the file is and use that for the amount of bytes that we want
+	to read, but that's a lot of work for something that won't happen that often (remember bash pipes the file into stdin, it doesn't
+	set stdin to the file, for whatever reason).
 	*/
-#endif
 
-	std::cout.sync_with_stdio(false);
-	std::cerr.sync_with_stdio(false);
-	std::cin.sync_with_stdio(false);
+	// C++ standard I/O can suck it, it's super slow. We're using C standard I/O. Maybe I'll make a wrapper library for C++ eventually.
 
-	if (argc == 1) { std::cerr << "ERROR: not enough args\n"; return EXIT_SUCCESS; }
+	// NOTE: This should do exactly what we want, but it totally doesn't for some reason.
+	//setvbuf(stdout, nullptr, _IOFBF, 65536);
+	//setvbuf(stdin, nullptr, _IOFBF, 65536);
+
+	// NOTE: So instead, we're doing it like this.
+	char stdout_buffer[BUFFER_SIZE];
+	setbuffer(stdout, stdout_buffer, BUFFER_SIZE);
+	char stdin_buffer[BUFFER_SIZE];
+	setbuffer(stdin, stdin_buffer, BUFFER_SIZE);
+
+	if (argc == 1) { writeError("ERROR: not enough args\n"); return EXIT_SUCCESS; }
 
 	if (std::strcmp(argv[1], "--help") == 0) {
-		if (argc != 2) { std::cerr << "ERROR: too many args\n"; return EXIT_SUCCESS; }
-		std::cout << helpText;
+		if (argc != 2) { writeError("ERROR: too many args\n"); return EXIT_SUCCESS; }
+		writeOutput(helpText);
 		return EXIT_SUCCESS;
 	}
 
 	if (std::strcmp(argv[1], "--varname") == 0) {
-		if (argc < 4) { std::cerr << "ERROR: not enough args\n"; return EXIT_SUCCESS; }
-		if (argc > 4) { std::cerr << "ERROR: too many args\n"; return EXIT_SUCCESS; }
+		if (argc < 4) { writeError("ERROR: not enough args\n"); return EXIT_SUCCESS; }
+		if (argc > 4) { writeError("ERROR: too many args\n"); return EXIT_SUCCESS; }
 		outputSource(argv[2], argv[3]);
 		return EXIT_SUCCESS;
 	}
 
-	if (argc != 2) { std::cerr << "ERROR: too many args\n"; return EXIT_SUCCESS; }
+	if (argc != 2) { writeError("ERROR: too many args\n"); return EXIT_SUCCESS; }
 	outputSource("data", argv[1]);
 }
