@@ -1,6 +1,6 @@
 #!/bin/bash
 
-script_dir_path=$(dirname $0)
+script_dir_path=$(dirname "$0")
 # the docs about the test command are kind of bad, they don't say that -a is deprecated and doesn't work sometimes.
 # you should never use -a
 # NOTE: Also, always remember to put your variables in quotes, because if you don't and they have spaces in them, that
@@ -9,7 +9,8 @@ if [ ! -f "$script_dir_path/bin/srcembed" ]; then
 	echo 'ERROR: no binaries to install'
 	exit
 fi
-read -p "installation directory: " install_dir
+read -p 'installation directory: ' install_dir
+eval install_dir="$install_dir"
 if [ ! -d "$install_dir" ]; then
 	echo 'ERROR: the provided installation directory does not exist'
 	exit

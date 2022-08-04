@@ -1,10 +1,13 @@
+#ifndef PLATFORM_WINDOWS
+#include <fcntl.h>		// for readahead()
+#include <unistd.h>		// for STDIN_FILENO
+#endif
+
 #include <iostream>		// for I/O
 #include <cstdlib>		// for std::exit(), EXIT_SUCCESS and EXIT_FAILURE
 #include <cstring>		// for std::strcmp()
 #include <new>			// for non-throwing new
 #include <cstdio>		// for EOF
-
-// TODO: Research why buffer sizes are the way they are and why bigger isn't always better?
 
 const char helpText[] = "usage: srcembed [--help] || ([--varname <variable name>] <language>)\n" \
 			"\n" \
@@ -19,27 +22,32 @@ const char helpText[] = "usage: srcembed [--help] || ([--varname <variable name>
 				"\tc++\n" \
 				"\tc\n";
 
+void output_C_CPP_array_data() noexcept {
+	int byte = std::cin.get();
+	if (byte == EOF) {
+		std::cerr << "ERROR: no data received, language requires data\n"; std::exit(EXIT_SUCCESS);
+	}
+	std::cout << byte;
+	while (true) {
+		byte = std::cin.get();
+		if (byte == EOF) { break; }
+		std::cout << ", " << byte;
+	}
+}
+
 void outputSource(const char* varname, const char* language) noexcept {
 	if (std::cout.bad()) { std::cerr << "ERROR: output to stdout failed\n"; std::exit(EXIT_FAILURE); }
 
 	if (std::strcmp(language, "c++") == 0) {
-		std::cout << "#pragma once; const char " << varname << "[] { ";
-		while (true) {
-			int byte = std::cin.get();
-			if (byte == EOF) { break; }
-			std::cout << byte << ", ";
-		}
-		std::cout << "0 };\n";
+		std::cout << "const char " << varname << "[] { ";
+		output_C_CPP_array_data();
+		std::cout << " };\n";
 		return;
 	}
 	if (std::strcmp(language, "c") == 0) {
 		std::cout << "const char " << varname << "[] = { ";
-		while (true) {
-			int byte = std::cin.get();
-			if (byte == EOF) { break; }
-			std::cout << byte << ", ";
-		}
-		std::cout << "0 };\n";
+		output_C_CPP_array_data();
+		std::cout << " };\n";
 		return;
 	}
 
@@ -47,6 +55,21 @@ void outputSource(const char* varname, const char* language) noexcept {
 }
 
 int main(int argc, const char* const * argv) noexcept {
+#ifndef PLATFORM_WINDOWS
+	readahead(STDIN_FILENO, 0, (size_t)-1);
+	/*
+	NOTE: The above usually doesn't work since stdin is usually the tty or a pipe. If it were a normal file though,
+	then the above call would actually be super important. It tells the OS to read ahead in the file and
+	preemptively cache the disk sectors. This makes it so we get almost no cache-misses if we read the file
+	sequentially, which we do. When you pipe a file into a command in bash though, it goes through a pipe first,
+	so this is rarely applicable. We have it just in case though.
+	*/
+#endif
+
+	std::cout.sync_with_stdio(false);
+	std::cerr.sync_with_stdio(false);
+	std::cin.sync_with_stdio(false);
+
 	if (argc == 1) { std::cerr << "ERROR: not enough args\n"; return EXIT_SUCCESS; }
 
 	if (std::strcmp(argv[1], "--help") == 0) {
