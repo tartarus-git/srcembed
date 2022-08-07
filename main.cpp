@@ -166,14 +166,36 @@ int main(int argc, const char* const * argv) noexcept {
 	//setvbuf(stdin, nullptr, _IOFBF, BUFSIZ);
 
 	// NOTE: So instead, we're doing it like this.
-	char stdout_buffer[BUFSIZ];
-	setbuffer(stdout, stdout_buffer, BUFSIZ);
+	//char stdout_buffer[BUFSIZ];
+	//setbuffer(stdout, stdout_buffer, BUFSIZ);
+	//char stdin_buffer[BUFSIZ];
+	//setbuffer(stdin, stdin_buffer, BUFSIZ);
+
+	// NOTE: Nope, the above works, but it isn't a standard part of the standard library and isn't supported in
+	// Windows. We do it like this instead.
+	// NOTE: Isn't a problem since setbuffer is just an alias for setvbuf(fd, buf, buf ? _IOFBF : _IONBF, size)
+	// anyway.
 	char stdin_buffer[BUFSIZ];
-	setbuffer(stdin, stdin_buffer, BUFSIZ);
+	setvbuf(stdin, stdin_buffer, _IOFBF, BUFSIZ);
+	char stdout_buffer[BUFSIZ];
+	setvbuf(stdout, stdout_buffer, _IOFBF, BUFSIZ);
 
 	// NOTE: One would think that BUFSIZ is the default buffer size for C buffered I/O.
 	// Apparently it isn't, because the above yields performance improvements.
 
+	// NOTE: Also, setvbuf apparently only works properly if you supply a buffer (see above).
+	// That is super weird, maybe I read the docs wrong.
+
 	int normalArgIndex = manageArgs(argc, argv);
 	outputSource(argv[normalArgIndex]);
+
+	// NOTE: We have to explicitly close stdin and stdout because we can't let them automatically close
+	// after stdin_buffer and stdout_buffer have already been freed. fclose will try to flush remaining
+	// data and that's very iffy if the buffers have already been released. Potential seg fault and all that.
+	// That's why we explicitly close them here.
+	// The standard says that we don't have to worry about other code closing them after we've already closed them
+	// here, which would be bad. I assume whatever code comes after us checks if they are open before trying to close
+	// them.
+	fclose(stdout);
+	fclose(stdin);
 }
