@@ -1,20 +1,23 @@
-#include <cstdio>		// for I/O
-#include <cstdlib>		// for std::exit(), EXIT_SUCCESS and EXIT_FAILURE
+#include <cstdlib>		// for std::exit(), EXIT_SUCCESS and EXIT_FAILURE, as well as every other syscall
+#ifndef PLATFORM_WINDOWS
+#include <unistd.h>		// for raw I/O
+#include <fcntl.h>		// for posix_fadvise() support
+#else
+#include <io.h>			// for Windows raw I/O
+#endif
+#include <cstdio>		// for buffered I/O
 #include <cstring>		// for std::strcmp()
 
-#ifndef PLATFORM_WINDOWS
-// NOTE: Linux says to use BUFSIZ here, because that's supposed to be optimized.
-// NOTE: Instead of that, we're using the default buffer size for pipes on Linux, since the I/O
-// is going to be piped most of the time. I've had way better luck with this number than with BUFSIZ, at least for this application.
-#define BUFFER_SIZE 65536
-#else
-// NOTE: I'm going to stick with BUFSIZ for Windows, since I don't know what the default pipe buffer size is.
-#define BUFFER_SIZE BUFSIZ
+#ifdef PLATFORM_WINDOWS
+#define STDOUT_FILENO 1
+#define STDERR_FILENO 2
+
+#define write(fd, buf, count) _write(fd, buf, count)
 #endif
 
-const char helpText[] = "usage: srcembed [--help] || ([--varname <variable name>] <language>)\n" \
+const char helpText[] = "usage: srcembed <--help> || ([--varname <variable name>] <language>)\n" \
 			"\n" \
-			"function: Converts input byte stream into source file (output through stdout).\n" \
+			"function: converts input byte stream into source file (output through stdout)\n" \
 			"\n" \
 			"arguments:\n" \
 				"\t[--help]                      --> displays help text\n" \
@@ -26,107 +29,149 @@ const char helpText[] = "usage: srcembed [--help] || ([--varname <variable name>
 				"\tc\n";
 
 template <size_t message_length>
-void writeError(const char (&message)[message_length]) noexcept {
-	if (std::fwrite(message, sizeof(char), message_length, stderr) == 0) { std::exit(EXIT_FAILURE); }
+void writeErrorAndExit(const char (&message)[message_length], int exitCode) noexcept {
+	write(STDERR_FILENO, message, message_length);
+	std::exit(exitCode);
 }
 
-template <size_t message_length>
-void writeOutput(const char (&message)[message_length]) noexcept {
-	if (std::fwrite(message, sizeof(char), message_length, stdout) == 0) {
-		writeError("ERROR: failed to write to stdout\n");
-		std::exit(EXIT_FAILURE);
-	}
-}
+#define REPORT_ERROR_AND_EXIT(message, exitCode) writeErrorAndExit("ERROR: " message "\n", exitCode)
 
 void output_C_CPP_array_data() noexcept {
+	// NOTE: The stat stuff isn't necessary because posix_fadvise just fails when stdin is
+	// a pipe, which is totally fine.
+	/*{
+		struct stat stdinStatus;
+		if (fstat(STDIN_FILENO, &stdinStatus) == 0) {
+			if (!S_ISFIFO(stdinStatus.st_mode)) {*/
+				if (posix_fadvise(STDIN_FILENO, 0, 0, POSIX_FADV_SEQUENTIAL) == 0) {
+					if (posix_fadvise(STDIN_FILENO, 0, 0, POSIX_FADV_NOREUSE) == 0) {
+						posix_fadvise(STDIN_FILENO, 0, 0, POSIX_FADV_DONTNEED);
+					}
+				}
+			/*}
+		}
+	}*/
+
 	unsigned char buffer[8];
 
+	// NOTE: fread shouldn't ever return less than the wanted amount of bytes unless either:
+	// a) EOF
+	// b) an error occurred
+	// In this way, it is very different to the raw I/O (read and write).
 	if (std::fread(buffer, sizeof(char), 1, stdin) == 0) {
-		if (std::ferror(stdin)) { writeError("ERROR: failed to read from stdin\n"); std::exit(EXIT_FAILURE); }
-		writeError("ERROR: no data received, language requires data\n"); std::exit(EXIT_SUCCESS);
+		if (std::ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
+		REPORT_ERROR_AND_EXIT("no data received, language requires data", EXIT_SUCCESS);
 	}
-	std::printf("%u", buffer[0]);
+	if (std::printf("%u", buffer[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 
 	while (true) {
 		size_t bytesRead = std::fread(buffer, sizeof(char), sizeof(buffer), stdin);
-		if (bytesRead == 0) {
-			if (std::ferror(stdin)) { writeError("ERROR: failed to read from stdin\n"); std::exit(EXIT_FAILURE); }
-			break;
-		}
+
 		if (bytesRead >= sizeof(buffer)) {
 			if (std::printf(", %u, %u, %u, %u, %u, %u, %u, %u", 
 					buffer[0], buffer[1], buffer[2], buffer[3], buffer[4], buffer[5], buffer[6], buffer[7]) < 0) {
-				writeError("ERROR: failed to write to stdout\n");
-				std::exit(EXIT_FAILURE);
+				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}
 			continue;
 		}
+
+		if (std::ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
 		for (char i = 0; i < bytesRead; i++) {
-			if (std::printf(", %u", buffer[i]) < 0) {
-				writeError("ERROR: failed to write to stdout\n");
-				std::exit(EXIT_FAILURE);
-			}
+			if (std::printf(", %u", buffer[i]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 		}
 		return;
 	}
 }
 
-void outputSource(const char* varname, const char* language) noexcept {
+namespace flags {
+	const char* varname = nullptr;
+}
+
+int manageArgs(int argc, const char* const * argv) noexcept {
+	int normalArgIndex = 0;
+	for (int i = 1; i < argc; i++) {
+		if (argv[i][0] == '-') {
+			switch (argv[i][1]) {
+			case '-':
+				{
+					const char* flagContent = argv[i] + 2;
+					if (std::strcmp(flagContent, "varname") == 0) {
+						if (flags::varname != nullptr) {
+							REPORT_ERROR_AND_EXIT("more than one instance of \"--varname\" flag illegal", EXIT_SUCCESS);
+						}
+						i++;
+						if (i == argc) {
+							REPORT_ERROR_AND_EXIT("\"--varname\" flag requires a value", EXIT_SUCCESS);
+						}
+						flags::varname = argv[i];
+						continue;
+					}
+					if (std::strcmp(flagContent, "help") == 0) {
+						if (argc != 2) { REPORT_ERROR_AND_EXIT("use of \"--help\" flag with other args is illegal", EXIT_SUCCESS); }
+						if (write(STDOUT_FILENO, helpText, sizeof(helpText) - 1) == -1) {
+							REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
+						}
+						std::exit(EXIT_SUCCESS);
+					}
+					REPORT_ERROR_AND_EXIT("one or more invalid flags specified", EXIT_SUCCESS);
+				}
+			default: REPORT_ERROR_AND_EXIT("one or more invalid flags specified", EXIT_SUCCESS);
+			}
+		}
+		if (normalArgIndex != 0) { REPORT_ERROR_AND_EXIT("too many non-flag args", EXIT_SUCCESS); }
+		normalArgIndex = i;
+	}
+	if (normalArgIndex == 0) { REPORT_ERROR_AND_EXIT("not enough non-flags args", EXIT_SUCCESS); }
+	if (flags::varname == nullptr) { flags::varname = "data"; }
+	return normalArgIndex;
+}
+
+template <size_t output_size>
+void writeOutput(const char (&output)[output_size]) noexcept {
+	if (fwrite(output, sizeof(char), output_size - sizeof(char), stdout) == -1) {
+		REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
+	}
+}
+
+void outputSource(const char* language) noexcept {
 	if (std::strcmp(language, "c++") == 0) {
-		std::printf("const char %s[] { ", varname);
+		if (std::printf("const char %s[] { ", flags::varname) < 0) {
+			REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
+		}
 		output_C_CPP_array_data();
 		writeOutput(" };\n");
 		return;
 	}
 	if (std::strcmp(language, "c") == 0) {
-		std::printf("const char %s[] = { ", varname);
+		if (std::printf("const char %s[] = { ", flags::varname) < 0) {
+			REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
+		}
 		output_C_CPP_array_data();
 		writeOutput(" };\n");
 		return;
 	}
 
-	writeOutput("ERROR: invalid language\n"); std::exit(EXIT_SUCCESS);
+	REPORT_ERROR_AND_EXIT("invalid language", EXIT_SUCCESS);
 }
 
 int main(int argc, const char* const * argv) noexcept {
-	/*
-	NOTE: Linux has this cool readahead functionality that reads the disk ahead and minimizes cache-misses when you read sequentially.
-	I can't really use the function here though because it only works on normal (and maybe a couple other) file-types.
-	I could still put it in just in case stdin happens to be a supported file-type, but you have to specify a maximum amount
-	of bytes that you want to read, which doesn't work here since we have no idea how many bytes we're going to be reading.
-	You also can't just put in the maximum number for size_t because then it fails for some reason.
-	NOTE: I guess we could test if stdin is a file, then find out how big the file is and use that for the amount of bytes that we want
-	to read, but that's a lot of work for something that won't happen that often (remember bash pipes the file into stdin, it doesn't
-	set stdin to the file, for whatever reason).
-	*/
-
 	// C++ standard I/O can suck it, it's super slow. We're using C standard I/O. Maybe I'll make a wrapper library for C++ eventually.
 
 	// NOTE: This should do exactly what we want, but it totally doesn't for some reason.
-	//setvbuf(stdout, nullptr, _IOFBF, 65536);
-	//setvbuf(stdin, nullptr, _IOFBF, 65536);
+	// NOTE: In fact, it kind of makes the performance worse.
+	// TODO: Why?
+	//setvbuf(stdout, nullptr, _IOFBF, BUFSIZ);
+	//setvbuf(stdin, nullptr, _IOFBF, BUFSIZ);
 
 	// NOTE: So instead, we're doing it like this.
-	char stdout_buffer[BUFFER_SIZE];
-	setbuffer(stdout, stdout_buffer, BUFFER_SIZE);
-	char stdin_buffer[BUFFER_SIZE];
-	setbuffer(stdin, stdin_buffer, BUFFER_SIZE);
+	char stdout_buffer[BUFSIZ];
+	setbuffer(stdout, stdout_buffer, BUFSIZ);
+	char stdin_buffer[BUFSIZ];
+	setbuffer(stdin, stdin_buffer, BUFSIZ);
 
-	if (argc == 1) { writeError("ERROR: not enough args\n"); return EXIT_SUCCESS; }
+	// NOTE: One would think that BUFSIZ is the default buffer size for C buffered I/O.
+	// Apparently it isn't, because the above yields performance improvements.
 
-	if (std::strcmp(argv[1], "--help") == 0) {
-		if (argc != 2) { writeError("ERROR: too many args\n"); return EXIT_SUCCESS; }
-		writeOutput(helpText);
-		return EXIT_SUCCESS;
-	}
-
-	if (std::strcmp(argv[1], "--varname") == 0) {
-		if (argc < 4) { writeError("ERROR: not enough args\n"); return EXIT_SUCCESS; }
-		if (argc > 4) { writeError("ERROR: too many args\n"); return EXIT_SUCCESS; }
-		outputSource(argv[2], argv[3]);
-		return EXIT_SUCCESS;
-	}
-
-	if (argc != 2) { writeError("ERROR: too many args\n"); return EXIT_SUCCESS; }
-	outputSource("data", argv[1]);
+	int normalArgIndex = manageArgs(argc, argv);
+	outputSource(argv[normalArgIndex]);
 }
