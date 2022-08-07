@@ -37,6 +37,7 @@ void writeErrorAndExit(const char (&message)[message_length], int exitCode) noex
 #define REPORT_ERROR_AND_EXIT(message, exitCode) writeErrorAndExit("ERROR: " message "\n", exitCode)
 
 void output_C_CPP_array_data() noexcept {
+#ifndef PLATFORM_WINDOWS
 	// NOTE: The stat stuff isn't necessary because posix_fadvise just fails when stdin is
 	// a pipe, which is totally fine.
 	/*{
@@ -51,6 +52,7 @@ void output_C_CPP_array_data() noexcept {
 			/*}
 		}
 	}*/
+#endif
 
 	unsigned char buffer[8];
 
