@@ -159,19 +159,12 @@ void outputSource(const char* language) noexcept {
 int main(int argc, const char* const * argv) noexcept {
 	// C++ standard I/O can suck it, it's super slow. We're using C standard I/O. Maybe I'll make a wrapper library for C++ eventually.
 
-	// NOTE: This should do exactly what we want, but it totally doesn't for some reason.
-	// NOTE: In fact, it kind of makes the performance worse.
-	// TODO: Why?
-	//setvbuf(stdout, nullptr, _IOFBF, BUFSIZ);
-	//setvbuf(stdin, nullptr, _IOFBF, BUFSIZ);
-
-	// NOTE: So instead, we're doing it like this.
 	//char stdout_buffer[BUFSIZ];
 	//setbuffer(stdout, stdout_buffer, BUFSIZ);
 	//char stdin_buffer[BUFSIZ];
 	//setbuffer(stdin, stdin_buffer, BUFSIZ);
 
-	// NOTE: Nope, the above works, but it isn't a standard part of the standard library and isn't supported in
+	// NOTE: The above works, but it isn't a standard part of the standard library and isn't supported in
 	// Windows. We do it like this instead.
 	// NOTE: Isn't a problem since setbuffer is just an alias for setvbuf(fd, buf, buf ? _IOFBF : _IONBF, size)
 	// anyway.
@@ -183,9 +176,6 @@ int main(int argc, const char* const * argv) noexcept {
 	// NOTE: One would think that BUFSIZ is the default buffer size for C buffered I/O.
 	// Apparently it isn't, because the above yields performance improvements.
 
-	// NOTE: Also, setvbuf apparently only works properly if you supply a buffer (see above).
-	// That is super weird, maybe I read the docs wrong.
-
 	int normalArgIndex = manageArgs(argc, argv);
 	outputSource(argv[normalArgIndex]);
 
@@ -196,6 +186,7 @@ int main(int argc, const char* const * argv) noexcept {
 	// The standard says that we don't have to worry about other code closing them after we've already closed them
 	// here, which would be bad. I assume whatever code comes after us checks if they are open before trying to close
 	// them.
+	// TODO: Look up how buffered I/O is implemented in C.
 	fclose(stdout);
 	fclose(stdin);
 }
