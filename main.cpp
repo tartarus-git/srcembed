@@ -1,16 +1,14 @@
 #include <cstdlib>		// for std::exit(), EXIT_SUCCESS and EXIT_FAILURE, as well as every other syscall
 #ifndef PLATFORM_WINDOWS
 #include <unistd.h>		// for raw I/O
-#include <sys/stat.h>
-#include <sys/mman.h>
+#include <sys/mman.h>		// for mmap, munmap and posix_madvise support
+#include <sys/stat.h>		// for fstat support
 #include <fcntl.h>		// for posix_fadvise() support
 #else
 #include <io.h>			// for Windows raw I/O
 #endif
 #include <cstdio>		// for buffered I/O
 #include <cstring>		// for std::strcmp()
-#include <cerrno>
-#include <cstdint>
 
 #ifdef PLATFORM_WINDOWS
 #define STDOUT_FILENO 1
@@ -32,16 +30,18 @@ const char helpText[] = "usage: srcembed <--help> || ([--varname <variable name>
 				"\tc++\n" \
 				"\tc\n";
 
-template <size_t message_length>
-void writeErrorAndExit(const char (&message)[message_length], int exitCode) noexcept {
-	write(STDERR_FILENO, message, message_length);
+template <size_t message_size>
+void writeErrorAndExit(const char (&message)[message_size], int exitCode) noexcept {
+	write(STDERR_FILENO, message, message_size - 1);
 	std::exit(exitCode);
 }
 
 #define REPORT_ERROR_AND_EXIT(message, exitCode) writeErrorAndExit("ERROR: " message "\n", exitCode)
 
+#ifndef PLATFORM_WINDOWS
+
 bool mmapWriteDoubleBuffer(char*& bufferA, char*& bufferB, size_t bufferSize) noexcept {
-	// TODO: Consider picking the best huge page size for the job dynamically.
+	// TODO: Consider picking the best huge page size for the job dynamically instead of just using the default one.
 	bufferA = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_HUGETLB, -1, 0);
 	if (bufferA == MAP_FAILED) {
 		bufferA = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
@@ -63,7 +63,8 @@ bool mmapWriteDoubleBuffer(char*& bufferA, char*& bufferB, size_t bufferSize) no
 }
 
 const unsigned char* mmapStdinFile(size_t stdinFileSize) noexcept {
-	// TODO: Put huge pages in this. That would make sense right?
+	// TODO: Put huge pages in this. There's no reason not to as long as you check beforehand whether they'll cover all the memory that
+	// you need, since you're only allowed a couple.
 	unsigned char* stdinFileData = (unsigned char*)mmap(nullptr, stdinFileSize, PROT_READ, MAP_PRIVATE | MAP_NORESERVE | MAP_POPULATE, STDIN_FILENO, 0);
 
 	// NOTE: I'm pretty sure these don't overwrite each other, but just in case, I put the more important one second.
@@ -76,10 +77,12 @@ const unsigned char* mmapStdinFile(size_t stdinFileSize) noexcept {
 enum class DataTransferExitCode {
 	SUCCESS,
 	NEEDS_FALLBACK,
+	NEEDS_FALLBACK_FROM_MMAP,
 	NO_INPUT_DATA
 };
 
 // TODO: Go through whole code and make sure you release resources when you exit gracefully (error exit doesn't have to I guess).
+// TODO: Go through bodies and rename stuff if you have to.
 
 template <size_t max_printf_write_length, unsigned char... chunk_indices>
 DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, const char* printfPattern, const char* singlePrintfPattern, size_t stdinFileSize) noexcept {
@@ -96,7 +99,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, co
 	// NOTE: We separate buffers to avoid cache contention. TODO: Figure out how that works.
 	char* stdoutBuffers[2];
 
-	if (mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutBufferSize) == false) { return DataTransferExitCode::NEEDS_FALLBACK; }
+	if (mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutBufferSize) == false) { return DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP; }
 
 	bool stdoutBufferToggle = false;
 	char* currentStdoutBuffer = stdoutBuffers[0];
@@ -106,7 +109,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, co
 	size_t tempBuffer_tail = 0;
 
 	const unsigned char* stdinFileData = mmapStdinFile(stdinFileSize);
-	if (stdinFileData == MAP_FAILED) { return DataTransferExitCode::NEEDS_FALLBACK; }
+	if (stdinFileData == MAP_FAILED) { return DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP; }
 	size_t stdinFileDataCutoff = stdinFileSize - bytes_per_chunk;
 	size_t stdinFileDataPosition = 1;
 
@@ -126,6 +129,11 @@ DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, co
 				stdoutBufferMemorySpan.iov_base = currentStdoutBuffer;
 				stdoutBufferMemorySpan.iov_len = amountOfBufferFilled;	// TODO: Make sure this doesn't mess things up when it's 0.
 				if (vmsplice(STDOUT_FILENO, &stdoutBufferMemorySpan, 1, 0) == -1) { REPORT_ERROR_AND_EXIT("vmsplice failed", EXIT_FAILURE); }
+
+				munmap(stdinFileData, stdinFileSize);
+				// TODO: What about the one that's in vmsplice right now. What about gifting it and unmapping it here.
+				// TODO: Also do error codes.
+				munmap(stdoutBuffers[!stdoutBufferToggle], stdoutBufferSize);
 
 				return DataTransferExitCode::SUCCESS;
 			}
@@ -154,6 +162,10 @@ DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, co
 						REPORT_ERROR_AND_EXIT("vmsplice failed", EXIT_FAILURE);
 					}
 
+					// TODO: Same deal as above.
+					munmap(stdinFileData, stdinFileSize);
+					munmap(stdoutBuffer[!toggle], stdoutBufferSize);
+
 					return DataTransferExitCode::SUCCESS;
 				}
 
@@ -168,6 +180,8 @@ DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, co
 				if (fwrite(tempBuffer + tempBuffer_tail, sizeof(char), amountOfBufferFilled, stdout) < amountOfBufferFilled) {
 					if (ferror(stdout)) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 				}
+
+				// TODO: unmaps
 
 				return DataTransferExitCode::SUCCESS;
 			}
@@ -198,7 +212,7 @@ DataTransferExitCode dataMode_mmap_write(const char* initialPrintfPattern, const
 	constexpr unsigned char bytes_per_chunk = sizeof...(chunk_indices);
 
 	const unsigned char* stdinFileData = mmapStdinFile(stdinFileSize);
-	if (stdinFileData == MAP_FAILED) { return DataTransferExitCode::NEEDS_FALLBACK; }
+	if (stdinFileData == MAP_FAILED) { return DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP; }
 
 	if (printf(initialPrintfPattern, stdinFileData[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 	size_t i;
@@ -232,7 +246,7 @@ DataTransferExitCode dataMode_read_vmsplice(const char* initialPrintfPattern, co
 	// NOTE: We separate buffers to avoid cache contention. TODO: Figure out how that works.
 	char* stdoutBuffers[2];
 
-	if (mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutBufferSize) == false) { return DataTransferExitCode::NEEDS_FALLBACK; }
+	if (mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutBufferSize) == false) { return DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP; }
 
 	bool stdoutBufferToggle = false;
 	char* currentStdoutBuffer = stdoutBuffers[0];
@@ -335,8 +349,10 @@ DataTransferExitCode dataMode_read_vmsplice(const char* initialPrintfPattern, co
 	}
 }
 
+#endif
+
 template <unsigned char... chunk_indices>
-DataTransferExitCode dataMode_read_write(const char* initialPrintfPattern, const char* printfPattern, const char* singlePrintfPattern) noexcept {
+bool dataMode_read_write(const char* initialPrintfPattern, const char* printfPattern, const char* singlePrintfPattern) noexcept {
 	constexpr unsigned char bytes_per_chunk = sizeof...(chunk_indices);
 
 	if (posix_fadvise(STDIN_FILENO, 0, 0, POSIX_FADV_NOREUSE) == 0) {
@@ -353,7 +369,7 @@ DataTransferExitCode dataMode_read_write(const char* initialPrintfPattern, const
 	// In this way, it is very different to the raw I/O (read and write).
 	if (std::fread(buffer, sizeof(char), 1, stdin) == 0) {
 		if (std::ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
-		return DataTransferExitCode::NO_INPUT_DATA;
+		return false;
 	}
 	if (std::printf(initialPrintfPattern, buffer[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 
@@ -374,7 +390,7 @@ DataTransferExitCode dataMode_read_write(const char* initialPrintfPattern, const
 				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}
 		}
-		return DataTransferExitCode::SUCCESS;
+		return true;
 	}
 }
 
@@ -382,6 +398,8 @@ template <size_t max_printf_write_length, unsigned char... chunk_indices>
 bool optimizedDataTransformationAndOutput_raw(const char* initialPrintfPattern, const char* printfPattern, const char* singlePrintfPattern) noexcept {
 	static_assert(sizeof...(chunk_indices) != 0, "parameter pack \"chunk_indices\" must contain at least 1 element");
 	static_assert(sizeof...(chunk_indices) < 256, "parameter pack \"chunk_indices\" must contain less than 256 elements");
+
+#ifndef PLATFORM_WINDOWS
 
 	struct stat statusA;
 	if (fstat(STDIN_FILENO, &statusA) == 0) {
@@ -393,7 +411,8 @@ bool optimizedDataTransformationAndOutput_raw(const char* initialPrintfPattern, 
 					if (sizeof(size_t) >= sizeof(off_t) || statusA.st_size <= (size_t)-1) {
 						switch (dataMode_mmap_vmsplice<max_printf_write_length, chunk_indices...>(initialPrintfPattern, printfPattern, singlePrintfPattern, statusA.st_size)) {
 						case DataTransferExitCode::SUCCESS: return true;
-						case DataTransferExitCode::NEEDS_FALLBACK: break;	// TODO: Make sure it makes sense to fallback into another mmap. Where do the fallback requests come from in the function code?
+						case DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP: goto use_data_mode_read_vmsplice;
+						case DataTransferExitCode::NEEDS_FALLBACK: break;
 						}
 					}
 				}
@@ -405,32 +424,28 @@ bool optimizedDataTransformationAndOutput_raw(const char* initialPrintfPattern, 
 			if (sizeof(size_t) >= sizeof(off_t) && statusA.st_size <= (size_t)-1) {
 				switch (dataMode_mmap_write<chunk_indices...>(initialPrintfPattern, printfPattern, singlePrintfPattern, statusA.st_size)) {
 				case DataTransferExitCode::SUCCESS: return true;
-				case DataTransferExitCode::NEEDS_FALLBACK: break;
+				case DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP: case DataTransferExitCode::NEEDS_FALLBACK: break;
 				}
 			}
 
-			switch (dataMode_read_write<chunk_indices...>(initialPrintfPattern, printfPattern, singlePrintfPattern)) {
-			case DataTransferExitCode::SUCCESS: return true;
-			case DataTransferExitCode::NO_INPUT_DATA: return false;
-			}
-			// TODO: You could replace the above with bool return, since it only ever has two states.
+			return dataMode_read_write<chunk_indices...>(initialPrintfPattern, printfPattern, singlePrintfPattern);
 		}
 	}
 
 	if (fstat(STDOUT_FILENO, &statusA) == 0) {
 		if (S_ISFIFO(statusA.st_mode)) {
+use_data_mode_read_vmsplice:
 			switch (dataMode_read_vmsplice<max_printf_write_length, chunk_indices...>(initialPrintfPattern, printfPattern, singlePrintfPattern)) {
 			case DataTransferExitCode::SUCCESS: return true;
 			case DataTransferExitCode::NO_INPUT_DATA: return false;
-			case DataTransferExitCode::NEEDS_FALLBACK: break;
+			case DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP: case DataTransferExitCode::NEEDS_FALLBACK: break;
 			}
 		}
 	}
 
-	switch (dataMode_read_write<chunk_indices...>(initialPrintfPattern, printfPattern, singlePrintfPattern)) {
-	case DataTransferExitCode::SUCCESS: return true;
-	case DataTransferExitCode::NO_INPUT_DATA: return false;
-	}
+#endif
+
+	return dataMode_read_write<chunk_indices...>(initialPrintfPattern, printfPattern, singlePrintfPattern);
 }
 
 template <size_t pattern_size>
@@ -445,258 +460,10 @@ consteval size_t calculate_max_printf_write_length(const char (&pattern)[pattern
 #define optimizedDataTransformationAndOutput(initialPrintfPattern, printfPattern, singlePrintfPattern, ...) optimizedDataTransformationAndOutput_raw<calculate_max_printf_write_length(printfPattern), __VA_ARGS__>(initialPrintfPattern, printfPattern, singlePrintfPattern)
 
 void output_C_CPP_array_data() noexcept {
-	optimizedDataTransformationAndOutput("%u", ", %u, %u, %u, %u, %u, %u, %u, %u", ", %u", 0, 1, 2, 3, 4, 5, 6, 7);
-}
-
-
-/*
-void output_C_CPP_array_data() noexcept {
-#ifndef PLATFORM_WINDOWS
-	struct stat stdinStatus;
-	if (fstat(STDIN_FILENO, &stdinStatus) == 0) {
-		if (S_ISREG(stdinStatus.st_mode)) {
-			struct stat stdoutStatus;
-			if (fstat(STDOUT_FILENO, &stdoutStatus) == 0) {
-				if (S_ISFIFO(stdoutStatus.st_mode)) {
-					int stdoutPipeBufferSize = fcntl(STDOUT_FILENO, F_GETPIPE_SZ);
-					fprintf(stderr, "pipe buffer size: %i\n", stdoutPipeBufferSize);
-					struct iovec memdata;
-
-#define MAX_POSSIBLE_PRINTF_MEMORY_OUTPUT ((3 + 2) * 8)		// , 255, 255, 255, 255 .... 8x = (3 + 2) * 8
-
-					char tempBuffer[MAX_POSSIBLE_PRINTF_MEMORY_OUTPUT * 2];
-					size_t tempBufferPtr = 0;
-					size_t tempBufferEaten = 0;
-				
-					off_t i = 0;
-
-						// TODO: Make this use big pages for efficiency.
-						char* buffer1 = (char*)mmap(nullptr,
-										     stdoutPipeBufferSize,
-										     PROT_WRITE,
-										     MAP_PRIVATE | MAP_ANON, // NO support for: | MAP_HUGETLB | (21 << MAP_HUGE_SHIFT),
-										     -1,
-										     0);
-						if (buffer1 == MAP_FAILED) {
-							fprintf(stderr, "%i", errno);
-							REPORT_ERROR_AND_EXIT("testing1231", EXIT_FAILURE); }
-
-						char* buffer2 = (char*)mmap(nullptr,
-										     stdoutPipeBufferSize,
-										     PROT_WRITE,
-										     MAP_PRIVATE | MAP_ANON, // NO support for:  | MAP_HUGETLB,
-										     -1,
-										     0);
-						if (buffer2 == MAP_FAILED) { REPORT_ERROR_AND_EXIT("testing123", EXIT_FAILURE); }
-
-						char* buffer;
-
-						bool counter = false;
-
-					while (true) {
-do_it_all_over_again:
-
-						counter = !counter;
-						if (counter) {
-							buffer = buffer1;
-						} else {
-							buffer = buffer2;
-						}
-
-
-
-						//write(STDERR_FILENO, "took\n", 5);
-
-
-						std::memcpy(buffer, tempBuffer + tempBufferEaten, tempBufferPtr - tempBufferEaten);
-
-						size_t amountOfBufferFilled = tempBufferPtr - tempBufferEaten;
-						amountOfBufferFilled += sprintf(buffer + amountOfBufferFilled, "%u", stdinFileData[i]) - 1;
-						i++;
-
-						tempBufferPtr = 0;
-						tempBufferEaten = 0;
-
-
-
-						for (; i < stdinStatus.st_size - 8; i += 8) {
-							//fprintf(stderr, "took for loop iteration\n");
-
-
-							amountOfBufferFilled += sprintf(buffer + amountOfBufferFilled, ", %u, %u, %u, %u, %u, %u, %u, %u", 
-					   			stdinFileData[i], stdinFileData[i + 1], stdinFileData[i + 2], stdinFileData[i + 3], 
-					   			stdinFileData[i + 4], stdinFileData[i + 5], stdinFileData[i + 6], stdinFileData[i + 7]) - 1;
-
-							if (amountOfBufferFilled > stdoutPipeBufferSize - MAX_POSSIBLE_PRINTF_MEMORY_OUTPUT) {
-					
-								while (true) {
-									tempBufferPtr += sprintf(tempBuffer + tempBufferPtr, ", %u, %u, %u, %u, %u, %u, %u, %u", 
-					   				stdinFileData[i], stdinFileData[i + 1], stdinFileData[i + 2], stdinFileData[i + 3], 
-					   				stdinFileData[i + 4], stdinFileData[i + 5], stdinFileData[i + 6], stdinFileData[i + 7]) - 1;
-									
-									if (tempBufferPtr >= stdoutPipeBufferSize - amountOfBufferFilled) { break; }
-								}				
-
-								memcpy(buffer + amountOfBufferFilled, tempBuffer, stdoutPipeBufferSize - amountOfBufferFilled);
-								tempBufferEaten = stdoutPipeBufferSize - amountOfBufferFilled;
-
-								memdata.iov_base = buffer;
-								memdata.iov_len = stdoutPipeBufferSize;
-								if (vmsplice(STDOUT_FILENO, &memdata, 1, SPLICE_F_MORE) == -1) {
-									// TODO: Is that the actual err det method?
-									// YES.
-									REPORT_ERROR_AND_EXIT("error with vmsplice", EXIT_FAILURE);
-								}
-
-								goto do_it_all_over_again;
-							}
-						}
-
-						REPORT_ERROR_AND_EXIT("took forbidden branch 2", EXIT_FAILURE);
-
-						for (; i < stdinStatus.st_size; i++) {
-							// TODO: Come up with a better way for this one.
-							if (printf(", %u", stdinFileData[i]) < 0) {
-								REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
-							}
-						}
-
-						munmap(stdinFileData, stdinStatus.st_size);
-						return;
-					}
-				}
-
-			if (printf("%u", stdinFileData[0]) < 0) {
-				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
-			}
-			off_t i;
-			for (i = 1; i < stdinStatus.st_size - 8; i += 8) {
-				if (printf(", %u, %u, %u, %u, %u, %u, %u, %u", 
-					   stdinFileData[i], stdinFileData[i + 1], stdinFileData[i + 2], stdinFileData[i + 3], 
-					   stdinFileData[i + 4], stdinFileData[i + 5], stdinFileData[i + 6], stdinFileData[i + 7]) < 0) {
-					REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
-				}
-			}
-			for (; i < stdinStatus.st_size; i++) {
-				if (printf(", %u", stdinFileData[i]) < 0) {
-					REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
-				}
-			}
-
-			munmap(stdinFileData, stdinStatus.st_size);
-			return;
-		}
-		}
-
-	struct stat stdoutStatus;
-	if (fstat(STDOUT_FILENO, &stdoutStatus) == 0) {
-		if (S_ISFIFO(stdoutStatus.st_mode)) {
-
-			char stdinFileData[8];
-			fread(stdinFileData, 1, 8, stdin);
-
-					int stdoutPipeBufferSize = fcntl(STDOUT_FILENO, F_GETPIPE_SZ);
-
-					struct iovec memdata;
-
-#define MAX_POSSIBLE_PRINTF_MEMORY_OUTPUT ((3 + 2) * 8)		// , 255, 255, 255, 255 .... 8x = (3 + 2) * 8
-
-					char tempBuffer[MAX_POSSIBLE_PRINTF_MEMORY_OUTPUT * 2];
-					size_t tempBufferPtr = 0;
-					size_t tempBufferEaten = 0;
-				
-						// TODO: Make this use big pages for efficiency.
-						char* buffer1 = (char*)mmap(nullptr,
-										     stdoutPipeBufferSize,
-										     PROT_WRITE,
-										     MAP_PRIVATE | MAP_ANON,
-										     -1,
-										     0);
-						char* buffer2 = (char*)mmap(nullptr,
-										     stdoutPipeBufferSize,
-										     PROT_WRITE,
-										     MAP_PRIVATE | MAP_ANON,
-										     -1,
-										     0);
-						bool counter = false;
-						char* buffer;
-					while (true) {
-do_it_all_over_again2:
-						counter = !counter;
-						if (counter) {
-							buffer = buffer1;
-						}
-							else {
-								buffer = buffer2;
-							}
-
-
-						std::memcpy(buffer, tempBuffer + tempBufferEaten, tempBufferPtr - tempBufferEaten);
-
-						size_t amountOfBufferFilled = tempBufferPtr - tempBufferEaten;
-						amountOfBufferFilled += sprintf(buffer + amountOfBufferFilled, "%u", stdinFileData[0]) - 1;
-
-
-						tempBufferPtr = 0;
-						tempBufferEaten = 0;
-
-
-						ssize_t amountActuallyRead;
-						while (true) {
-							amountOfBufferFilled += sprintf(buffer + amountOfBufferFilled, ", %u, %u, %u, %u, %u, %u, %u, %u", 
-					   			stdinFileData[0], stdinFileData[1], stdinFileData[2], stdinFileData[3], 
-					   			stdinFileData[4], stdinFileData[5], stdinFileData[6], stdinFileData[7]) - 1;
-
-							amountActuallyRead = fread(stdinFileData, 1, 8, stdin);
-							if (amountActuallyRead < 8) { break; }
-
-							if (amountOfBufferFilled > stdoutPipeBufferSize - MAX_POSSIBLE_PRINTF_MEMORY_OUTPUT && amountOfBufferFilled < stdoutPipeBufferSize) {
-					
-								while (true) {
-									tempBufferPtr += sprintf(tempBuffer + tempBufferPtr, ", %u, %u, %u, %u, %u, %u, %u, %u", 
-					   				stdinFileData[0], stdinFileData[1], stdinFileData[2], stdinFileData[3], 
-					   				stdinFileData[4], stdinFileData[5], stdinFileData[6], stdinFileData[7]) - 1;
-
-									fread(stdinFileData, 1, 8, stdin);
-									
-									if (tempBufferPtr >= stdoutPipeBufferSize - amountOfBufferFilled) { break; }
-								}				
-
-								memdata.iov_base = buffer;
-								memdata.iov_len = stdoutPipeBufferSize;
-								vmsplice(STDOUT_FILENO, &memdata, 1, SPLICE_F_MORE);
-
-								goto do_it_all_over_again2;
-							}
-						}
-
-						for (; amountActuallyRead < 8; amountActuallyRead++) {
-
-							memdata.iov_base = buffer;
-							memdata.iov_len = amountOfBufferFilled;
-							vmsplice(STDOUT_FILENO, &memdata, 1, 0);
-
-
-
-
-							// TODO: Come up with a better way for this one.
-							if (printf(", %u", stdinFileData[amountActuallyRead]) < 0) {
-								REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
-							}
-						}
-
-						return;
-					}
-				}
-
-		}
+	if (optimizedDataTransformationAndOutput("%u", ", %u, %u, %u, %u, %u, %u, %u, %u", ", %u", 0, 1, 2, 3, 4, 5, 6, 7) == false) {
+		REPORT_ERROR_AND_EXIT("no data received, language requires data", EXIT_FAILURE);
 	}
-
-
-use_normal_read_write_transfer:
-
 }
-*/
 
 namespace flags {
 	const char* varname = nullptr;
