@@ -10,6 +10,8 @@
 #include <cstdio>		// for buffered I/O
 #include <cstring>		// for std::strcmp()
 
+#include "meta_printf.h"
+
 #ifdef PLATFORM_WINDOWS
 
 #define STDOUT_FILENO 1
@@ -575,6 +577,9 @@ void outputSource(const char* language) noexcept {
 }
 
 int main(int argc, const char* const * argv) noexcept {
+	char buffer[1024];
+	meta_sprintf_test(buffer, "hi there");
+
 	// C++ standard I/O can suck it, it's super slow. We're using C standard I/O. Maybe I'll make a wrapper library for C++ eventually.
 
 	//char stdout_buffer[BUFSIZ];
