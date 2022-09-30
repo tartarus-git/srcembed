@@ -578,7 +578,11 @@ void outputSource(const char* language) noexcept {
 
 int main(int argc, const char* const * argv) noexcept {
 	char buffer[1024];
-	meta_sprintf_test(buffer, "hi there");
+	char* bufptr = buffer;
+	for (int i = 0; i < 2; i++) {
+		meta_sprintf_test(bufptr++, "hi ther\n");
+	}
+	write(STDOUT_FILENO, buffer, sizeof("hi there\n") - 1);
 
 	// C++ standard I/O can suck it, it's super slow. We're using C standard I/O. Maybe I'll make a wrapper library for C++ eventually.
 
