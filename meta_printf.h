@@ -3,6 +3,8 @@
 #include <type_traits>
 
 #include <cstdint>
+#include <limits>
+
 #include <algorithm>
 
 namespace meta {
@@ -49,6 +51,34 @@ namespace meta {
 	consteval auto construct_meta_string(const char (&string)[string_size]) {
 		meta_string<string_size - 1> result;
 		for (size_t i = 0; i < string_size - 1; i++) { result[i] = string[i]; }
+		return result;
+	}
+
+	// TODO: You know the drill, use concepts here instead of enable_if.
+	template <typename integral_type, typename std::enable_if<std::is_integral<integral_type>{}, bool>::type = false>
+		// TODO: Why does this cause a linker error when something inside this function loops forever for example?
+	consteval size_t get_max_digits_of_integral_type() {
+		integral_type value;
+		size_t result;
+		if constexpr (std::is_signed<integral_type>{}) {
+			value = std::numeric_limits<integral_type>::min();
+			result = 1;
+		}
+		else {
+			value = std::numeric_limits<integral_type>::max();
+			result = 0;
+		}
+
+		while (true) {
+			// NOTE: Can't do the following because the order of execution of the left and right sides of the inequality is
+			// undefined. Hence the whole thing is undefined behaviour.
+			//if (value != (value /= 10)) { result++; }
+
+			if (value == 0) { break; }
+			result++;
+			value /= 10;
+		}
+
 		return result;
 	}
 
@@ -230,31 +260,40 @@ namespace meta {
 			return program;
 		}
 
+		// TODO: Use concepts to constrain this to integral types.
+		template <typename integral_type, typename std::enable_if<std::is_integral<integral_type>{}, bool>::type = false>
+		// TODO: This function could 100% be made a fair bit faster, I just don't know exactly how that works yet.
+		constexpr size_t write_integral(char* buffer, integral_type input) {
+			char temp_buffer[get_max_digits_of_integral_type<integral_type>()];
+			char* temp_buffer_end_ptr = temp_buffer + sizeof(temp_buffer);
+			char* temp_buffer_ptr = temp_buffer_end_ptr - 1;
+
+			if (std::is_signed<integral_type>{}) {
+				if (input < 0) {
+					while (true) {
+						*(temp_buffer_ptr--) = -(input % 10) + '0';
+						input /= 10;
+						if (input == 0) { break; }
+					}
+					*temp_buffer_ptr = '-';
+				}
+			}
+			while (true) {
+				if (input < 10) { break; }
+				*(temp_buffer_ptr--) = (input % 10) + '0';
+				input /= 10;
+			}
+			*temp_buffer_ptr = input + '0';
+
+			std::copy(temp_buffer_ptr, temp_buffer_end_ptr, buffer);
+
+			return temp_buffer_end_ptr - temp_buffer_ptr;
+		}
+
 		template <const auto& program, size_t operation_index>
-			// TODO: Don't use C-style variadic functions because those are disgusting. Use parameter packs and such, there is a way,
-			// don't worry.
-		void execute_program(char* buffer, ...) noexcept {
-			// NOTE: We have to put constexpr here because or else the lower if statement will get processed even when it doesn't
-			// need to be. This doesn't seem like an issue, but it is:
-			// Since the lower if has constexpr, the expression inside is evaluated while generating the AST (as opposed to later in compile-time or even in runtime), to determine if the if-statements
-			// below it will need to be analysed. If expression below it contains an out-of-bounds array access, it suddenly isn't a
-			// constant expression anymore, causing a compilation error.
-			// To avoid the case where it has an out-of-bounds array access, we stop AST generation before it gets there by making this if
-			// statement constexpr as well.
-			// NOTE: If you remove constexpr from the lower if, this problem goes away, but not really.
-			// Basically, everything works fine because the if condition doesn't need to be a constant expression anymore (it is now translated into AST instead of being interpreted by the AST generator),
-			// but now the AST generation doesn't have a stop condition so a recursion limit is hit in the compiler and compilation doesn't
-			// succeed.
-			// The constexpr is necessary to stop the AST generation at some point, or else it would explode everytime.
-			// PROBLEM:
-			// If this function would be evaluated at compile-time, the compiler could interpret the AST while generating it, and
-			// every branch would be predictable. Basically, the AST generation wouldn't need to explode because after a certain point,
-			// the exit condition would be reached and the AST would have no reason to keep generating.
-			// SOLUTION: This is a fair point and totally doable as far as compiler design goes, but it's suboptimal because now,
-			// your function will compile fine when called from compile-time and fail compilation when called from runtime.
-			// Imagine your writing a function without knowing from where it will be used, you obviously want these types of AST
-			// overflows to cause compilation errors so that they don't slip under the radar, which is presumably why the compiler
-			// adheres to runtime behaviour even in compile-time, in this case.
+		// TODO: Add note about variadic functions and what we're doing here.
+		void execute_program(char* buffer) noexcept {
+			// TODO: Move comment from second overload into this overload since it's above.
 			if constexpr (operation_index >= sizeof(program) / sizeof(op)) {
 				*buffer = '\0';
 				return;
@@ -265,7 +304,59 @@ namespace meta {
 				return;
 			}
 			else if constexpr (program[operation_index].type == op_type::UINT8) {
-				// TODO: Read uint8 from source somehow.
+				// NOTE: The condition below cannot be straight false because then the static_assert fires on every build,
+				// no matter what.
+				// This is because code in the false segments of constexpr if's is still parsed and analysed and such,
+				// presumably to avoid letting coding mistakes slip through in the false branches of these if's.
+				// Along with a couple other specific things, the main guarantee of constexpr if is that
+				// the false branches are not instantiated when the template (if one is present) is instantiated.
+				// Types are still checked for things that are not template dependant, and static_asserts that are not
+				// template dependant still fire. That's why we need the condition to be template dependant.
+				// TODO: Idk if I like the static_assert behaviour with the false in it, ask about it and discuss and such.
+				static_assert(operation_index == operation_index + 1, "meta_printf invalid: blueprint requires input arguments");
+			}
+		}
+
+		template <const auto& program, size_t operation_index, typename first_arg_type, typename... rest_arg_types>
+		void execute_program(char* buffer, first_arg_type first_arg, rest_arg_types... rest_args) noexcept {
+			// NOTE: We have to put constexpr here because or else the lower if statement will get processed even when it doesn't
+			// need to be. This doesn't seem like an issue, but it is:
+			// Since the lower if has constexpr, the expression inside is evaluated while instantiating the template, to determine if the if-statements
+			// below it will need to be instantiated. If expression below it contains an out-of-bounds array access, it suddenly isn't a
+			// constant expression anymore, causing a compilation error.
+			// To avoid the case where it has an out-of-bounds array access, we stop AST generation before it gets there by making this if
+			// statement constexpr as well.
+			// NOTE: If you remove constexpr from the lower if, this problem goes away, but not really.
+			// Basically, everything works fine because the if condition doesn't need to be a constant expression anymore (it is now translated into AST instead of being interpreted by the AST generator (all of this still strictly on instantiation of the template)),
+			// but now the AST generation doesn't have a stop condition so a recursion limit is hit in the compiler and compilation doesn't
+			// succeed. --> because the endlessly-recursive function calls all need to be put into the AST.
+			// The constexpr is necessary to stop the AST generation at some point, or else it would explode everytime.
+			// PROBLEM:
+			// If this function would be evaluated at compile-time, the compiler could interpret the AST while generating it, and
+			// every branch would be predictable. Basically, the AST generation wouldn't need to explode because after a certain point,
+			// the exit condition would be reached and the AST would have no reason to keep generating.
+			// SOLUTION: This is a fair point and totally doable as far as compiler design goes, but it's suboptimal because now,
+			// your template function will instantiate fine when called from compile-time and fail compilation when called from runtime.
+			// (because, assuming we make first if non-constexpr, runtime execution could create out-of-bounds if that if fails).
+			// Imagine your writing a function without knowing from where it will be used, you obviously want these types of AST
+			// overflows to cause compilation errors so that they don't slip under the radar, which is presumably why the compiler
+			// adheres to runtime behaviour even in compile-time, in this case.
+			// NOTE: Just remember that it behaves as if it completes generating the post-template-instantiation AST before interpreting it
+			// and running compile-time functions.
+			if constexpr (operation_index >= sizeof(program) / sizeof(op)) {
+				*buffer = '\0';
+				return;
+			}
+			else if constexpr (program[operation_index].type == op_type::TEXT) {
+				std::copy(program[operation_index].text.ptr, program[operation_index].text.ptr + program[operation_index].text.length, buffer);
+				execute_program<program, operation_index + 1>(buffer + program[operation_index].text.length, first_arg, rest_args...);
+				return;
+			}
+			else if constexpr (program[operation_index].type == op_type::UINT8) {
+				// TODO: Change this to use some sort of is_implicitly_castable thing.
+				static_assert(std::is_same<first_arg_type, uint8_t>{}, "meta_printf failed: one or more input args have incorrect types");
+				size_t bytes_written = write_integral<uint8_t>(buffer, first_arg);
+				execute_program<program, operation_index + 1>(buffer + bytes_written, rest_args...);
 				return;
 			}
 		}
@@ -274,5 +365,11 @@ namespace meta {
 
 // We have to use static constexpr variable here because binding non-static constexpr to template non-type doesn't work since the address of the variable could potentially be run-time dependant.
 // static makes the variable be located in some global memory, which (as far as the binary file is concerned) has constant addresses.
-#define meta_sprintf_test(buffer, blueprint, ...) namespace { static constexpr auto meta_printf_blueprint = meta::construct_meta_string(blueprint); static constexpr auto program = meta::printf::create_program<meta_printf_blueprint>(); meta::printf::execute_program<program, 0>(buffer __VA_OPT__(,) __VA_ARGS__); }
-// TODO: Write about the static constexpr problem and how it technically could cause issues sometimes, but we don't care anyway because in those situations, it would be the same between invocations anyway, just remember stackoverflow.
+#define meta_sprintf_test(buffer, blueprint, ...) { static constexpr auto meta_printf_blueprint = meta::construct_meta_string(blueprint); static constexpr auto program = meta::printf::create_program<meta_printf_blueprint>(); meta::printf::execute_program<program, 0>(buffer __VA_OPT__(,) __VA_ARGS__); }
+// NOTE: We enclose the macro body in a scope (not the same thing as an unnamed namespace) so that it may be used multiple times by the caller.
+// NOTE: This causes some weirdness in the static constexpr variables:
+//	- what makes sense is that subsequent usages of the macro have different static constexpr variables so everything is fine
+//	- what about using the macro over and over again in a loop though?
+//		- well there, the static constexpr vars are in fact be the same variable, which then only gets initialized once,
+//			but it doesn't matter because there is no situation where the value would need to change in such a construction.
+// NOTE: So basically, everythings good!
