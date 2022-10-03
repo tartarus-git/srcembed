@@ -21,7 +21,7 @@ namespace meta {
 	//		- you can't put string literals into those either, but you can put references to static constexpr char arrays in there.
 	//		- you can probably shrink the possible inputs to just char arrays if you make use of concepts, but that's a different
 	//		story.
-	// 	- you can accept the const char (&)[N] (and probably also const char*) as args of constexpr/consteval functions.
+	// 	- you can accept the const char (&)[N] (and also const char*) as args of constexpr/consteval functions.
 	//		- this works with string literals, because the type can't be messed up like above, so the language is ok with it.
 	//		- this works and has the added bonus that you can use template arg deduction to figure out the length of the char array.
 	// 		- PROBLEM: You can't pass the args into nested-functions because the args aren't considered constant expressions.
@@ -54,9 +54,12 @@ namespace meta {
 		return result;
 	}
 
-	// TODO: You know the drill, use concepts here instead of enable_if.
 	template <typename integral_type, typename std::enable_if<std::is_integral<integral_type>{}, bool>::type = false>
-		// TODO: Why does this cause a linker error when something inside this function loops forever for example?
+	// NOTE: This function is the subject of a linker error when something for example loops forever inside of it.
+	// The runtime code wants to link to this function, but it isn't there in the object files since it never exists at runtime.
+	// GCC doesn't do this, it handles the issue properly, this seems like a Clang bug.
+	// Seems like partial confusion between constexpr and consteval on the compiler's part.
+	// TODO: Ask some people (stackoverflow) and possibly report this bug.
 	consteval size_t get_max_digits_of_integral_type() {
 		integral_type value;
 		size_t result;
@@ -84,28 +87,32 @@ namespace meta {
 
 	namespace printf {
 
-		enum class op_type : uint8_t { INVALID, NOOP, TEXT, UINT8, EOFOP };
+		enum class op_type_t : uint8_t { INVALID, NOOP, TEXT, UINT8, EOFOP };
 
 		struct parse_table_element {
 			uint8_t next_state;
-			op_type op_type;
+
+			//op_type op_type;		// NOTE: You're not allowed to hide types with other types or variables.
+							// NOTE: Even though Clang allows it in this case for some reason. Probs compiler bug.
+
+			op_type_t op_type;
 		};
 
 		consteval auto generate_blueprint_parse_table() {
 			meta_array<parse_table_element, 129 * 3> table { };		// create table filled with invalid characters
 
 			for (uint16_t i = 1 * 129; i < 1 * 129 + 128; i++) {		// make all characters valid for state 1 (except EOF)
-				table[i].op_type = op_type::TEXT;
+				table[i].op_type = op_type_t::TEXT;
 				table[i].next_state = 1;				// all state 1 characters loop back to state 1
 			}
 
-			table[1 * 129 + '%'].op_type = op_type::NOOP;			// '%' isn't a finished operation
+			table[1 * 129 + '%'].op_type = op_type_t::NOOP;			// '%' isn't a finished operation
 			table[1 * 129 + '%'].next_state = 2;				// also brings state to special operation state
 
-			table[2 * 129 + 'u'].op_type = op_type::UINT8;			// 'u' finishes operation, so mark it
+			table[2 * 129 + 'u'].op_type = op_type_t::UINT8;			// 'u' finishes operation, so mark it
 			table[2 * 129 + 'u'].next_state = 1;				// also brings special operation back to text state
 
-			table[1 * 129 + 128].op_type = op_type::EOFOP;			// text state EOF is the only valid one, mark it
+			table[1 * 129 + 128].op_type = op_type_t::EOFOP;			// text state EOF is the only valid one, mark it
 
 			return table;
 		}
@@ -118,7 +125,7 @@ namespace meta {
 		};
 
 		struct op {
-			op_type type;
+			op_type_t type;
 			blueprint_string text;
 		};
 
@@ -138,14 +145,14 @@ namespace meta {
 
 				switch (table_entry.op_type) {
 
-				case op_type::INVALID: throw "meta_printf blueprint invalid";
+				case op_type_t::INVALID: throw "meta_printf blueprint invalid";
 
-				case op_type::NOOP:
+				case op_type_t::NOOP:
 					state = table_entry.next_state;
 					text_encountered = false;
 					break;
 
-				case op_type::TEXT:
+				case op_type_t::TEXT:
 					state = table_entry.next_state;
 					if (!text_encountered) {
 						result++;
@@ -153,14 +160,14 @@ namespace meta {
 					}
 					break;
 
-				case op_type::UINT8:
+				case op_type_t::UINT8:
 					state = table_entry.next_state;
 					result++;
 					break;
 
 				}
 			}
-			if (blueprint_parse_table[state * 129 + 128].op_type == op_type::INVALID) { throw "meta_printf blueprint invalid"; }
+			if (blueprint_parse_table[state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf blueprint invalid"; }
 
 			return result;
 		}
@@ -220,12 +227,21 @@ namespace meta {
 
 				switch (table_entry.op_type) {
 
-				case op_type::INVALID: throw "meta_printf blueprint invalid";
+				// NOTE: throw is illegal in a consteval function, but only if the interpreter actually hits it.
+				// This is perfect for us, since we want to trigger an error anyway.
+				case op_type_t::INVALID: throw "meta_printf invalid: blueprint invalid";
+				// NOTE: In a constexpr function, throw will force evaluation at runtime, since it's illegal at compile-time.
+				// NOTE: But constexpr functions must have at least one set of args that allows compile-time execution,
+				// so it fails if throw is always hit.
+				// PROBLEM: The problem of whether a set of args exists that is compile-time is not easy to solve.
+				// There are situations where it is practically unsolvable. In that case I assume the compiler doesn't let
+				// you finish compilation even if there theoretically is a route where compile-time evaluation is possible.
+				// TODO: Research this and see what actually happens.
 
-				case op_type::NOOP:
+				case op_type_t::NOOP:
 					state = table_entry.next_state;
 					if (text_encountered) {
-						program[operation_index].type = op_type::TEXT;
+						program[operation_index].type = op_type_t::TEXT;
 						program[operation_index].text.ptr = blueprint.data + text_begin_index;
 						program[operation_index].text.length = i - text_begin_index;
 						operation_index++;
@@ -233,7 +249,7 @@ namespace meta {
 					}
 					break;
 
-				case op_type::TEXT:
+				case op_type_t::TEXT:
 					state = table_entry.next_state;
 					if (!text_encountered) {
 						text_begin_index = i;
@@ -241,18 +257,18 @@ namespace meta {
 					}
 					break;
 
-				case op_type::UINT8:
+				case op_type_t::UINT8:
 					state = table_entry.next_state;
-					program[operation_index++].type = op_type::UINT8;
+					program[operation_index++].type = op_type_t::UINT8;
 					break;
 
 				}
 			}
 
-			if (blueprint_parse_table[state * 129 + 128].op_type == op_type::INVALID) { throw "meta_printf blueprint invalid"; }
+			if (blueprint_parse_table[state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf invalid: blueprint invalid"; }
 
 			if (text_encountered) {
-				program[operation_index].type = op_type::TEXT;
+				program[operation_index].type = op_type_t::TEXT;
 				program[operation_index].text.ptr = blueprint.data + text_begin_index;
 				program[operation_index].text.length = sizeof(blueprint) - text_begin_index;
 			}
@@ -260,7 +276,6 @@ namespace meta {
 			return program;
 		}
 
-		// TODO: Use concepts to constrain this to integral types.
 		template <typename integral_type, typename std::enable_if<std::is_integral<integral_type>{}, bool>::type = false>
 		// TODO: This function could 100% be made a fair bit faster, I just don't know exactly how that works yet.
 		constexpr size_t write_integral(char* buffer, integral_type input) {
@@ -291,34 +306,7 @@ namespace meta {
 		}
 
 		template <const auto& program, size_t operation_index>
-		// TODO: Add note about variadic functions and what we're doing here.
 		void execute_program(char* buffer) noexcept {
-			// TODO: Move comment from second overload into this overload since it's above.
-			if constexpr (operation_index >= sizeof(program) / sizeof(op)) {
-				*buffer = '\0';
-				return;
-			}
-			else if constexpr (program[operation_index].type == op_type::TEXT) {
-				std::copy(program[operation_index].text.ptr, program[operation_index].text.ptr + program[operation_index].text.length, buffer);
-				execute_program<program, operation_index + 1>(buffer + program[operation_index].text.length);
-				return;
-			}
-			else if constexpr (program[operation_index].type == op_type::UINT8) {
-				// NOTE: The condition below cannot be straight false because then the static_assert fires on every build,
-				// no matter what.
-				// This is because code in the false segments of constexpr if's is still parsed and analysed and such,
-				// presumably to avoid letting coding mistakes slip through in the false branches of these if's.
-				// Along with a couple other specific things, the main guarantee of constexpr if is that
-				// the false branches are not instantiated when the template (if one is present) is instantiated.
-				// Types are still checked for things that are not template dependant, and static_asserts that are not
-				// template dependant still fire. That's why we need the condition to be template dependant.
-				// TODO: Idk if I like the static_assert behaviour with the false in it, ask about it and discuss and such.
-				static_assert(operation_index == operation_index + 1, "meta_printf invalid: blueprint requires input arguments");
-			}
-		}
-
-		template <const auto& program, size_t operation_index, typename first_arg_type, typename... rest_arg_types>
-		void execute_program(char* buffer, first_arg_type first_arg, rest_arg_types... rest_args) noexcept {
 			// NOTE: We have to put constexpr here because or else the lower if statement will get processed even when it doesn't
 			// need to be. This doesn't seem like an issue, but it is:
 			// Since the lower if has constexpr, the expression inside is evaluated while instantiating the template, to determine if the if-statements
@@ -347,13 +335,45 @@ namespace meta {
 				*buffer = '\0';
 				return;
 			}
-			else if constexpr (program[operation_index].type == op_type::TEXT) {
+			else if constexpr (program[operation_index].type == op_type_t::TEXT) {
+				std::copy(program[operation_index].text.ptr, program[operation_index].text.ptr + program[operation_index].text.length, buffer);
+				execute_program<program, operation_index + 1>(buffer + program[operation_index].text.length);
+				return;
+			}
+			else if constexpr (program[operation_index].type == op_type_t::UINT8) {
+				// NOTE: The condition below cannot be straight false because then the static_assert fires on every build,
+				// no matter what.
+				// This is because code in the false segments of constexpr if's is still parsed and analysed and such,
+				// presumably to avoid letting coding mistakes slip through in the false branches of these if's.
+				// Along with a couple other specific things, the main guarantee of constexpr if is that
+				// the false branches are not instantiated when the template (if one is present) is instantiated.
+				// Types are still checked for things that are not template dependant, and static_asserts that are not
+				// template dependant still fire. That's why we need the condition to be template dependant.
+				// TODO: Idk if I like the static_assert behaviour with the false in it, ask about it and discuss and such.
+				static_assert(operation_index == operation_index + 1, "meta_printf invalid: blueprint requires input arguments");
+			}
+		}
+
+		template <const auto& program, size_t operation_index, typename first_arg_type, typename... rest_arg_types>
+		// NOTE: We could have used C-style variadic functions here, but that's a mess and I despise that.
+		// Instead, we use C++ parameter packs, which are nicer.
+		// Just remember that variadic functions have the ... at the end (optionally preceded by a comma) and
+		// parameter packs have the ... after the type (or after the typename/class keyword).
+		// I'm very sure that the ... of a variadic function cannot accept a C++ parameter pack, so these two concepts are not
+		// compatible in any way AFAIK.
+		void execute_program(char* buffer, first_arg_type first_arg, rest_arg_types... rest_args) noexcept {
+			if constexpr (operation_index >= sizeof(program) / sizeof(op)) {
+				*buffer = '\0';
+				return;
+			}
+			else if constexpr (program[operation_index].type == op_type_t::TEXT) {
 				std::copy(program[operation_index].text.ptr, program[operation_index].text.ptr + program[operation_index].text.length, buffer);
 				execute_program<program, operation_index + 1>(buffer + program[operation_index].text.length, first_arg, rest_args...);
 				return;
 			}
-			else if constexpr (program[operation_index].type == op_type::UINT8) {
-				// TODO: Change this to use some sort of is_implicitly_castable thing.
+			else if constexpr (program[operation_index].type == op_type_t::UINT8) {
+				// NOTE: One could make this more flexible by allowing non-narrowing conversions for example,
+				// but I'm gonna pass on that for now, so that the code is more explicit.
 				static_assert(std::is_same<first_arg_type, uint8_t>{}, "meta_printf failed: one or more input args have incorrect types");
 				size_t bytes_written = write_integral<uint8_t>(buffer, first_arg);
 				execute_program<program, operation_index + 1>(buffer + bytes_written, rest_args...);
