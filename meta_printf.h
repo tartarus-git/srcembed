@@ -7,6 +7,11 @@
 
 #include <algorithm>
 
+#include <cstdlib>
+#include <cstdio>
+
+#include "error_handling.h"
+
 namespace meta {
 
 	// Facilities for handling strings at compile-time:
@@ -87,6 +92,46 @@ namespace meta {
 
 	namespace printf {
 
+		// NOTE: In case (in the future) you think this iterator is botched and not standards-conforming,
+		// it is AFAIK completely conformant to the standard. Everything is A-OK!
+		class streamed_stdout_it {
+			std::ptrdiff_t amount_of_bytes_written = 0;
+			// NOTE: The above setting to 0 causes value initialization to revert to default initialization.
+			// Because a default constructor is generated to handle setting the variable to 0 on initialization,
+			// value initialization isn't allowed to value initialize anymore.
+			char buffer;
+
+		public:
+			using difference_type = std::ptrdiff_t;
+			using value_type = decltype(buffer);
+			using pointer = void;
+			using reference = void;
+			using iterator_category = std::output_iterator_tag;
+
+			static consteval streamed_stdout_it make_compile_time_instance() {
+				streamed_stdout_it result;
+				result.buffer = 0;
+				return result;
+			}
+
+			constexpr char& operator*() noexcept { return buffer; }
+			constexpr const char& operator*() const noexcept { return buffer; }
+
+			streamed_stdout_it& operator++() noexcept {
+				if (fputc(buffer, stdout) == EOF) {
+					REPORT_ERROR_AND_EXIT("meta_printf failed: failed to write to stdout", EXIT_FAILURE);
+				}
+				amount_of_bytes_written++;
+				return *this;
+			}
+
+			// NOTE: The following function isn't part of LegacyOutputIterator, which is what this class is conforming to.
+			// Luckily, extra functions don't hurt so this doesn't bother anyone.
+			constexpr std::ptrdiff_t operator-(const streamed_stdout_it& other) const noexcept {
+				return amount_of_bytes_written - other.amount_of_bytes_written;
+			}
+		};
+
 		enum class op_type_t : uint8_t { INVALID, NOOP, TEXT, UINT8, EOFOP };
 
 		struct parse_table_element {
@@ -109,10 +154,10 @@ namespace meta {
 			table[1 * 129 + '%'].op_type = op_type_t::NOOP;			// '%' isn't a finished operation
 			table[1 * 129 + '%'].next_state = 2;				// also brings state to special operation state
 
-			table[2 * 129 + 'u'].op_type = op_type_t::UINT8;			// 'u' finishes operation, so mark it
+			table[2 * 129 + 'u'].op_type = op_type_t::UINT8;		// 'u' finishes operation, so mark it
 			table[2 * 129 + 'u'].next_state = 1;				// also brings special operation back to text state
 
-			table[1 * 129 + 128].op_type = op_type_t::EOFOP;			// text state EOF is the only valid one, mark it
+			table[1 * 129 + 128].op_type = op_type_t::EOFOP;		// text state EOF is the only valid one, mark it
 
 			return table;
 		}
@@ -139,13 +184,14 @@ namespace meta {
 			unsigned char state = 1;
 
 			bool text_encountered = false;
+			op_type_t last_op = op_type_t::INVALID;
 
 			for (size_t i = 0; i < blueprint_length; i++) {
-				parse_table_element table_entry = blueprint_parse_table[state * 129 + blueprint[i]];
+				parse_table_element table_entry = blueprint_parse_table[(uint16_t)state * 129 + blueprint[i]];
 
-				switch (table_entry.op_type) {
+				switch (last_op = table_entry.op_type) {
 
-				case op_type_t::INVALID: throw "meta_printf blueprint invalid";
+				case op_type_t::INVALID: throw "meta_printf invalid: blueprint invalid";
 
 				case op_type_t::NOOP:
 					state = table_entry.next_state;
@@ -167,7 +213,10 @@ namespace meta {
 
 				}
 			}
-			if (blueprint_parse_table[state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf blueprint invalid"; }
+			if (last_op == op_type_t::NOOP) { throw "hi there first"; }
+			if (state == 2) { throw "hi there"; }
+			// TODO: Get rid of uint16_t stuff, it doesn't make any sense.
+			if (blueprint_parse_table[(uint16_t)state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf invalid: blueprint invalid"; }
 
 			return result;
 		}
@@ -223,7 +272,7 @@ namespace meta {
 			bool text_encountered = false;
 
 			for (size_t i = 0; i < sizeof(blueprint); i++) {
-				parse_table_element table_entry = blueprint_parse_table[state * 129 + blueprint[i]];
+				parse_table_element table_entry = blueprint_parse_table[(uint16_t)state * 129 + blueprint[i]];
 
 				switch (table_entry.op_type) {
 
@@ -265,7 +314,7 @@ namespace meta {
 				}
 			}
 
-			if (blueprint_parse_table[state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf invalid: blueprint invalid"; }
+			if (blueprint_parse_table[(uint16_t)state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf invalid: blueprint invalid"; }
 
 			if (text_encountered) {
 				program[operation_index].type = op_type_t::TEXT;
@@ -276,9 +325,9 @@ namespace meta {
 			return program;
 		}
 
-		template <typename integral_type, typename std::enable_if<std::is_integral<integral_type>{}, bool>::type = false>
+		template <typename output_it, typename integral_type, typename std::enable_if<std::is_integral<integral_type>{}, bool>::type = false>
 		// TODO: This function could 100% be made a fair bit faster, I just don't know exactly how that works yet.
-		constexpr size_t write_integral(char* buffer, integral_type input) {
+		constexpr output_it write_integral(output_it buffer, integral_type input) {
 			char temp_buffer[get_max_digits_of_integral_type<integral_type>()];
 			char* temp_buffer_end_ptr = temp_buffer + sizeof(temp_buffer);
 			char* temp_buffer_ptr = temp_buffer_end_ptr - 1;
@@ -300,13 +349,11 @@ namespace meta {
 			}
 			*temp_buffer_ptr = input + '0';
 
-			std::copy(temp_buffer_ptr, temp_buffer_end_ptr, buffer);
-
-			return temp_buffer_end_ptr - temp_buffer_ptr;
+			return std::copy(temp_buffer_ptr, temp_buffer_end_ptr, buffer);
 		}
 
-		template <const auto& program, size_t operation_index>
-		void execute_program(char* buffer) noexcept {
+		template <const auto& program, size_t operation_index, typename output_it>
+		auto execute_program(output_it buffer) noexcept -> output_it {
 			// NOTE: We have to put constexpr here because or else the lower if statement will get processed even when it doesn't
 			// need to be. This doesn't seem like an issue, but it is:
 			// Since the lower if has constexpr, the expression inside is evaluated while instantiating the template, to determine if the if-statements
@@ -333,12 +380,11 @@ namespace meta {
 			// and running compile-time functions.
 			if constexpr (operation_index >= sizeof(program) / sizeof(op)) {
 				*buffer = '\0';
-				return;
+				return buffer;
 			}
 			else if constexpr (program[operation_index].type == op_type_t::TEXT) {
-				std::copy(program[operation_index].text.ptr, program[operation_index].text.ptr + program[operation_index].text.length, buffer);
-				execute_program<program, operation_index + 1>(buffer + program[operation_index].text.length);
-				return;
+				output_it new_buffer = std::copy(program[operation_index].text.ptr, program[operation_index].text.ptr + program[operation_index].text.length, buffer);
+				return execute_program<program, operation_index + 1>(new_buffer);
 			}
 			else if constexpr (program[operation_index].type == op_type_t::UINT8) {
 				// NOTE: The condition below cannot be straight false because then the static_assert fires on every build,
@@ -354,38 +400,47 @@ namespace meta {
 			}
 		}
 
-		template <const auto& program, size_t operation_index, typename first_arg_type, typename... rest_arg_types>
+		template <const auto& program, size_t operation_index, typename first_arg_type, typename... rest_arg_types, typename output_it>
 		// NOTE: We could have used C-style variadic functions here, but that's a mess and I despise that.
 		// Instead, we use C++ parameter packs, which are nicer.
 		// Just remember that variadic functions have the ... at the end (optionally preceded by a comma) and
 		// parameter packs have the ... after the type (or after the typename/class keyword).
 		// I'm very sure that the ... of a variadic function cannot accept a C++ parameter pack, so these two concepts are not
 		// compatible in any way AFAIK.
-		void execute_program(char* buffer, first_arg_type first_arg, rest_arg_types... rest_args) noexcept {
+			// TODO: Iterator forces us to use fputc even for strings, which is inefficient.
+			// Instead, create a custom container class with a defined API and accept that.
+			// Then all you need to do is transform pointers and stdout into that standard container before passing them into
+			// this function. Very simple.
+		auto execute_program(output_it buffer, first_arg_type first_arg, rest_arg_types... rest_args) noexcept -> output_it {
 			if constexpr (operation_index >= sizeof(program) / sizeof(op)) {
 				*buffer = '\0';
-				return;
+				return buffer;
 			}
 			else if constexpr (program[operation_index].type == op_type_t::TEXT) {
-				std::copy(program[operation_index].text.ptr, program[operation_index].text.ptr + program[operation_index].text.length, buffer);
-				execute_program<program, operation_index + 1>(buffer + program[operation_index].text.length, first_arg, rest_args...);
-				return;
+				output_it new_buffer = std::copy(program[operation_index].text.ptr, program[operation_index].text.ptr + program[operation_index].text.length, buffer);
+				return execute_program<program, operation_index + 1>(new_buffer, first_arg, rest_args...);
 			}
 			else if constexpr (program[operation_index].type == op_type_t::UINT8) {
 				// NOTE: One could make this more flexible by allowing non-narrowing conversions for example,
 				// but I'm gonna pass on that for now, so that the code is more explicit.
 				static_assert(std::is_same<first_arg_type, uint8_t>{}, "meta_printf failed: one or more input args have incorrect types");
-				size_t bytes_written = write_integral<uint8_t>(buffer, first_arg);
-				execute_program<program, operation_index + 1>(buffer + bytes_written, rest_args...);
-				return;
+				output_it new_buffer = write_integral(buffer, first_arg);
+				return execute_program<program, operation_index + 1>(new_buffer, rest_args...);
 			}
 		}
+
+		inline constexpr streamed_stdout_it pseudo_stdout_buffer = streamed_stdout_it::make_compile_time_instance();
+		// NOTE: constexpr variables are const by default, but not inline by default.
+		// Since const global variables have internal linkage instead of externel linkage like normal variables,
+		// including this header in multiple files would still work without the above inline.
+		// Still, the inline is better because with external linkage, the variable only exists in one place in the end binary.
+		// NOTE: It might exist in only one place anyway because of optimizations, but you get my point.
 	}
 }
 
 // We have to use static constexpr variable here because binding non-static constexpr to template non-type doesn't work since the address of the variable could potentially be run-time dependant.
 // static makes the variable be located in some global memory, which (as far as the binary file is concerned) has constant addresses.
-#define meta_sprintf_test(buffer, blueprint, ...) { static constexpr auto meta_printf_blueprint = meta::construct_meta_string(blueprint); static constexpr auto program = meta::printf::create_program<meta_printf_blueprint>(); meta::printf::execute_program<program, 0>(buffer __VA_OPT__(,) __VA_ARGS__); }
+#define meta_sprintf(buffer, blueprint, ...) [&]() { static constexpr auto meta_printf_blueprint = meta::construct_meta_string(blueprint); static constexpr auto program = meta::printf::create_program<meta_printf_blueprint>(); return meta::printf::execute_program<program, 0>(buffer __VA_OPT__(,) __VA_ARGS__) - buffer; }()
 // NOTE: We enclose the macro body in a scope (not the same thing as an unnamed namespace) so that it may be used multiple times by the caller.
 // NOTE: This causes some weirdness in the static constexpr variables:
 //	- what makes sense is that subsequent usages of the macro have different static constexpr variables so everything is fine
@@ -393,3 +448,6 @@ namespace meta {
 //		- well there, the static constexpr vars are in fact be the same variable, which then only gets initialized once,
 //			but it doesn't matter because there is no situation where the value would need to change in such a construction.
 // NOTE: So basically, everythings good!
+// TODO: Update above comments to reflect change to lambda for return value.
+
+#define meta_printf(blueprint, ...) [&]() { static constexpr auto meta_printf_blueprint = meta::construct_meta_string(blueprint); static constexpr auto program = meta::printf::create_program<meta_printf_blueprint>(); return meta::printf::execute_program<program, 0>(meta::printf::pseudo_stdout_buffer __VA_OPT__(,) __VA_ARGS__); }()

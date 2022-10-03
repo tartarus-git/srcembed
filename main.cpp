@@ -10,6 +10,8 @@
 #include <cstdio>		// for buffered I/O
 #include <cstring>		// for std::strcmp()
 
+#include "error_handling.h"
+
 #include "meta_printf.h"
 
 #ifdef PLATFORM_WINDOWS
@@ -37,14 +39,6 @@ const char helpText[] = "usage: srcembed <--help> || ([--varname <variable name>
 			"supported languages (possible inputs for <language> field):\n" \
 				"\tc++\n" \
 				"\tc\n";
-
-template <size_t message_size>
-void writeErrorAndExit(const char (&message)[message_size], int exitCode) noexcept {
-	write(STDERR_FILENO, message, message_size - 1);
-	std::exit(exitCode);
-}
-
-#define REPORT_ERROR_AND_EXIT(message, exitCode) writeErrorAndExit("ERROR: " message "\n", exitCode)
 
 #ifndef PLATFORM_WINDOWS
 
@@ -89,8 +83,18 @@ enum class DataTransferExitCode {
 	NO_INPUT_DATA
 };
 
-template <size_t max_printf_write_length, unsigned char... chunk_indices>
-DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, const char* printfPattern, const char* singlePrintfPattern, size_t stdinFileSize) noexcept {
+template <size_t pattern_size>
+consteval size_t calculate_max_printf_write_length(const char (&pattern)[pattern_size]) {
+	size_t result = pattern_size - 1;
+	for (size_t i = 0; i < pattern_size; i++) {
+		if (pattern[i] == '%') { result++; }
+	}
+	return result;
+}
+
+template <const auto& initial_printf_pattern, const auto& printf_pattern, const auto& single_printf_pattern, unsigned char... chunk_indices>
+DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
+	constexpr size_t max_printf_write_length = calculate_max_printf_write_length(printf_pattern.data);
 	constexpr unsigned char bytes_per_chunk = sizeof...(chunk_indices);
 
 	int stdoutPipeBufferSize = fcntl(STDOUT_FILENO, F_GETPIPE_SZ);
@@ -118,7 +122,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, co
 	size_t stdinFileDataCutoff = stdinFileSize - bytes_per_chunk;
 	size_t stdinFileDataPosition = 1;
 
-	int bytesWritten = sprintf(currentStdoutBuffer, initialPrintfPattern, stdinFileData[0]);
+	int bytesWritten = meta_sprintf(currentStdoutBuffer, initial_printf_pattern.data, stdinFileData[0]);
 	if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 	size_t amountOfBufferFilled = bytesWritten;
 
@@ -126,7 +130,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, co
 		while (amountOfBufferFilled < stdoutBufferSize - max_printf_write_length) {
 			if (stdinFileDataPosition > stdinFileDataCutoff) {
 				for (; stdinFileDataPosition < stdinFileSize; stdinFileDataPosition++) {
-					bytesWritten = sprintf(currentStdoutBuffer + amountOfBufferFilled, singlePrintfPattern, stdinFileData[stdinFileDataPosition]);
+					bytesWritten = meta_sprintf(currentStdoutBuffer + amountOfBufferFilled, single_printf_pattern.data, stdinFileData[stdinFileDataPosition]);
 					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					amountOfBufferFilled += bytesWritten;
 				}
@@ -148,7 +152,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, co
 				return DataTransferExitCode::SUCCESS;
 			}
 
-			bytesWritten = sprintf(currentStdoutBuffer + amountOfBufferFilled, printfPattern, stdinFileData[stdinFileDataPosition + chunk_indices]...);
+			bytesWritten = meta_sprintf(currentStdoutBuffer + amountOfBufferFilled, printf_pattern.data, stdinFileData[stdinFileDataPosition + chunk_indices]...);
 			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			stdinFileDataPosition += 8;
 			amountOfBufferFilled += bytesWritten;
@@ -158,7 +162,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, co
 		for (tempBuffer_head = 0; tempBuffer_head < tempBuffer_tail;) {
 			if (stdinFileDataPosition > stdinFileDataCutoff) {
 				for (; stdinFileDataPosition < stdinFileSize; stdinFileDataPosition++) {
-					bytesWritten = sprintf(tempBuffer + tempBuffer_head, singlePrintfPattern, stdinFileData[stdinFileDataPosition]);
+					bytesWritten = meta_sprintf(tempBuffer + tempBuffer_head, single_printf_pattern.data, stdinFileData[stdinFileDataPosition]);
 					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					tempBuffer_head += bytesWritten;
 				}
@@ -204,7 +208,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, co
 				return DataTransferExitCode::SUCCESS;
 			}
 
-			bytesWritten = sprintf(tempBuffer + tempBuffer_head, printfPattern, stdinFileData[stdinFileDataPosition + chunk_indices]...);
+			bytesWritten = meta_sprintf(tempBuffer + tempBuffer_head, printf_pattern.data, stdinFileData[stdinFileDataPosition + chunk_indices]...);
 			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			stdinFileDataPosition += 8;
 			tempBuffer_head += bytesWritten;
@@ -224,22 +228,22 @@ DataTransferExitCode dataMode_mmap_vmsplice(const char* initialPrintfPattern, co
 	}
 }
 
-template <size_t max_printf_write_length, size_t... chunk_indices>
-bool dataMode_mmap_write(const char* initialPrintfPattern, const char* printfPattern, const char* singlePrintfPattern, size_t stdinFileSize) noexcept {
+template <const auto& initial_printf_pattern, const auto& printf_pattern, const auto& single_printf_pattern, size_t... chunk_indices>
+bool dataMode_mmap_write(size_t stdinFileSize) noexcept {
 	constexpr unsigned char bytes_per_chunk = sizeof...(chunk_indices);
 
 	const unsigned char* stdinFileData = mmapStdinFile(stdinFileSize);
 	if (stdinFileData == MAP_FAILED) { return false; }
 
-	if (printf(initialPrintfPattern, stdinFileData[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
+	if (meta_printf(initial_printf_pattern.data, stdinFileData[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 	size_t i;
 	for (i = 1; i < stdinFileSize + 1 - bytes_per_chunk; i += bytes_per_chunk) {
-		if (printf(printfPattern, stdinFileData[i + chunk_indices]...) < 0) {
+		if (meta_printf(printf_pattern.data, stdinFileData[i + chunk_indices]...) < 0) {
 			REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 		}
 	}
 	for (; i < stdinFileSize; i++) {
-		if (printf(singlePrintfPattern, stdinFileData[i]) < 0) {
+		if (meta_printf(single_printf_pattern, stdinFileData[i]) < 0) {
 			REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 		}
 	}
@@ -248,8 +252,9 @@ bool dataMode_mmap_write(const char* initialPrintfPattern, const char* printfPat
 	return true;
 }
 
-template <size_t max_printf_write_length, unsigned char... chunk_indices>
-DataTransferExitCode dataMode_read_vmsplice(const char* initialPrintfPattern, const char* printfPattern, const char* singlePrintfPattern) noexcept {
+template <const auto& initial_printf_pattern, const auto& printf_pattern, const auto& single_printf_pattern, unsigned char... chunk_indices>
+DataTransferExitCode dataMode_read_vmsplice() noexcept {
+	constexpr size_t max_printf_write_length = calculate_max_printf_write_length(printf_pattern.data);
 	constexpr unsigned char bytes_per_chunk = sizeof...(chunk_indices);
 
 	int stdoutPipeBufferSize = fcntl(STDOUT_FILENO, F_GETPIPE_SZ);
@@ -278,7 +283,7 @@ DataTransferExitCode dataMode_read_vmsplice(const char* initialPrintfPattern, co
 		return DataTransferExitCode::NO_INPUT_DATA;
 	}
 
-	int bytesWritten = sprintf(currentStdoutBuffer, initialPrintfPattern, inputBuffer[0]);
+	int bytesWritten = meta_sprintf(currentStdoutBuffer, initial_printf_pattern.data, inputBuffer[0]);
 	if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 	size_t amountOfBufferFilled = bytesWritten;
 
@@ -289,7 +294,7 @@ DataTransferExitCode dataMode_read_vmsplice(const char* initialPrintfPattern, co
 				if (ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
 
 				for (unsigned char i = 0; i < bytesRead; i++) {
-					bytesWritten = sprintf(currentStdoutBuffer + amountOfBufferFilled, singlePrintfPattern, inputBuffer[i]);
+					bytesWritten = meta_sprintf(currentStdoutBuffer + amountOfBufferFilled, single_printf_pattern.data, inputBuffer[i]);
 					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					amountOfBufferFilled += bytesWritten;
 				}
@@ -309,7 +314,7 @@ DataTransferExitCode dataMode_read_vmsplice(const char* initialPrintfPattern, co
 				return DataTransferExitCode::SUCCESS;
 			}
 
-			bytesWritten = sprintf(currentStdoutBuffer + amountOfBufferFilled, printfPattern, inputBuffer[chunk_indices]...);
+			bytesWritten = meta_sprintf(currentStdoutBuffer + amountOfBufferFilled, printf_pattern.data, inputBuffer[chunk_indices]...);
 			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			amountOfBufferFilled += bytesWritten;
 		}
@@ -321,7 +326,7 @@ DataTransferExitCode dataMode_read_vmsplice(const char* initialPrintfPattern, co
 				if (ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
 
 				for (unsigned char i = 0; i < bytesRead; i++) {
-					bytesWritten = sprintf(tempBuffer + tempBuffer_head, singlePrintfPattern, inputBuffer[i]);
+					bytesWritten = meta_sprintf(tempBuffer + tempBuffer_head, single_printf_pattern.data, inputBuffer[i]);
 					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					tempBuffer_head += bytesWritten;
 				}
@@ -365,7 +370,7 @@ DataTransferExitCode dataMode_read_vmsplice(const char* initialPrintfPattern, co
 				return DataTransferExitCode::SUCCESS;
 			}
 
-			bytesWritten = sprintf(tempBuffer + tempBuffer_head, printfPattern, inputBuffer[chunk_indices]...);
+			bytesWritten = meta_sprintf(tempBuffer + tempBuffer_head, printf_pattern.data, inputBuffer[chunk_indices]...);
 			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			tempBuffer_head += bytesWritten;
 		}
@@ -386,8 +391,8 @@ DataTransferExitCode dataMode_read_vmsplice(const char* initialPrintfPattern, co
 
 #endif
 
-template <unsigned char... chunk_indices>
-bool dataMode_read_write(const char* initialPrintfPattern, const char* printfPattern, const char* singlePrintfPattern) noexcept {
+template <const auto& initial_printf_pattern, const auto& printf_pattern, const auto& single_printf_pattern, unsigned char... chunk_indices>
+bool dataMode_read_write() noexcept {
 	constexpr unsigned char bytes_per_chunk = sizeof...(chunk_indices);
 
 #ifndef PLATFORM_WINDOWS
@@ -408,13 +413,13 @@ bool dataMode_read_write(const char* initialPrintfPattern, const char* printfPat
 		if (std::ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
 		return false;
 	}
-	if (std::printf(initialPrintfPattern, buffer[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
+	if (meta_printf(initial_printf_pattern.data, buffer[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 
 	while (true) {
 		unsigned char bytesRead = std::fread(buffer, sizeof(char), bytes_per_chunk, stdin);
 
 		if (bytesRead == bytes_per_chunk) {
-			if (std::printf(printfPattern, buffer[chunk_indices]...) < 0) {
+			if (meta_printf(printf_pattern.data, buffer[chunk_indices]...) < 0) {
 				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}
 			continue;
@@ -423,7 +428,7 @@ bool dataMode_read_write(const char* initialPrintfPattern, const char* printfPat
 		if (std::ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
 
 		for (unsigned char i = 0; i < bytesRead; i++) {
-			if (std::printf(singlePrintfPattern, buffer[i]) < 0) {
+			if (meta_printf(single_printf_pattern.data, buffer[i]) < 0) {
 				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}
 		}
@@ -431,8 +436,8 @@ bool dataMode_read_write(const char* initialPrintfPattern, const char* printfPat
 	}
 }
 
-template <size_t max_printf_write_length, unsigned char... chunk_indices>
-bool optimizedDataTransformationAndOutput_raw(const char* initialPrintfPattern, const char* printfPattern, const char* singlePrintfPattern) noexcept {
+template <const auto& initial_printf_pattern, const auto& printf_pattern, const auto& single_printf_pattern, unsigned char... chunk_indices>
+bool optimizedDataTransformationAndOutput_raw() noexcept {
 	static_assert(sizeof...(chunk_indices) != 0, "parameter pack \"chunk_indices\" must contain at least 1 element");
 	static_assert(sizeof...(chunk_indices) < 256, "parameter pack \"chunk_indices\" must contain less than 256 elements");
 
@@ -446,7 +451,7 @@ bool optimizedDataTransformationAndOutput_raw(const char* initialPrintfPattern, 
 				if (S_ISFIFO(statusB.st_mode)) {
 					if (statusA.st_size == 0) { return false; }
 					if (sizeof(size_t) >= sizeof(off_t) || statusA.st_size <= (size_t)-1) {
-						switch (dataMode_mmap_vmsplice<max_printf_write_length, chunk_indices...>(initialPrintfPattern, printfPattern, singlePrintfPattern, statusA.st_size)) {
+						switch (dataMode_mmap_vmsplice<initial_printf_pattern, printf_pattern, single_printf_pattern, chunk_indices...>(statusA.st_size)) {
 						case DataTransferExitCode::SUCCESS: return true;
 						case DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP: goto use_data_mode_read_vmsplice;
 						case DataTransferExitCode::NEEDS_FALLBACK: break;
@@ -459,17 +464,17 @@ bool optimizedDataTransformationAndOutput_raw(const char* initialPrintfPattern, 
 			// NOTE: If size_t is 32-bit and linux large file extention is enabled (off_t is 64-bit),
 			// only allow mmapping if file length can fit into size_t.
 			if (sizeof(size_t) >= sizeof(off_t) && statusA.st_size <= (size_t)-1) {
-				if (dataMode_mmap_write<chunk_indices...>(initialPrintfPattern, printfPattern, singlePrintfPattern, statusA.st_size)) { return true; }
+				if (dataMode_mmap_write<initial_printf_pattern, printf_pattern, single_printf_pattern, chunk_indices...>(statusA.st_size)) { return true; }
 			}
 
-			return dataMode_read_write<chunk_indices...>(initialPrintfPattern, printfPattern, singlePrintfPattern);
+			return dataMode_read_write<initial_printf_pattern, printf_pattern, single_printf_pattern, chunk_indices...>();
 		}
 	}
 
 	if (fstat(STDOUT_FILENO, &statusA) == 0) {
 		if (S_ISFIFO(statusA.st_mode)) {
 use_data_mode_read_vmsplice:
-			switch (dataMode_read_vmsplice<max_printf_write_length, chunk_indices...>(initialPrintfPattern, printfPattern, singlePrintfPattern)) {
+			switch (dataMode_read_vmsplice<initial_printf_pattern, printf_pattern, single_printf_pattern, chunk_indices...>()) {
 			case DataTransferExitCode::SUCCESS: return true;
 			case DataTransferExitCode::NO_INPUT_DATA: return false;
 			case DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP: case DataTransferExitCode::NEEDS_FALLBACK: break;
@@ -479,19 +484,10 @@ use_data_mode_read_vmsplice:
 
 #endif
 
-	return dataMode_read_write<chunk_indices...>(initialPrintfPattern, printfPattern, singlePrintfPattern);
+	return dataMode_read_write<initial_printf_pattern, printf_pattern, single_printf_pattern, chunk_indices...>();
 }
 
-template <size_t pattern_size>
-consteval size_t calculate_max_printf_write_length(const char (&pattern)[pattern_size]) {
-	size_t result = pattern_size - 1;
-	for (size_t i = 0; i < pattern_size; i++) {
-		if (pattern[i] == '%') { result++; }
-	}
-	return result;
-}
-
-#define optimizedDataTransformationAndOutput(initialPrintfPattern, printfPattern, singlePrintfPattern, ...) optimizedDataTransformationAndOutput_raw<calculate_max_printf_write_length(printfPattern), __VA_ARGS__>(initialPrintfPattern, printfPattern, singlePrintfPattern)
+#define optimizedDataTransformationAndOutput(initialPrintfPattern, printfPattern, singlePrintfPattern, ...) [&]() { static constexpr auto initial_printf_pattern = meta::construct_meta_string(initialPrintfPattern); static constexpr auto printf_pattern = meta::construct_meta_string(printfPattern); static constexpr auto single_printf_pattern = meta::construct_meta_string(singlePrintfPattern); return optimizedDataTransformationAndOutput_raw<initial_printf_pattern, printf_pattern, single_printf_pattern, __VA_ARGS__>(); }()
 
 namespace flags {
 	const char* varname = nullptr;
@@ -577,11 +573,6 @@ void outputSource(const char* language) noexcept {
 }
 
 int main(int argc, const char* const * argv) noexcept {
-	char buffer[1024];
-	meta_sprintf_test(buffer, "this is my number: %u!!!", (unsigned char)255);
-	std::printf(buffer);
-	std::fflush(stdout);
-
 	// C++ standard I/O can suck it, it's super slow. We're using C standard I/O. Maybe I'll make a wrapper library for C++ eventually.
 
 	//char stdout_buffer[BUFSIZ];
