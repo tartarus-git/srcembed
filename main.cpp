@@ -10,8 +10,6 @@
 #include <cstdio>		// for buffered I/O
 #include <cstring>		// for std::strcmp()
 
-#include "error_handling.h"
-
 #include "meta_printf.h"
 
 #ifdef PLATFORM_WINDOWS
@@ -39,6 +37,14 @@ const char helpText[] = "usage: srcembed <--help> || ([--varname <variable name>
 			"supported languages (possible inputs for <language> field):\n" \
 				"\tc++\n" \
 				"\tc\n";
+
+template <size_t message_size>
+void writeErrorAndExit(const char (&message)[message_size], int exitCode) noexcept {
+	write(STDERR_FILENO, message, message_size - 1);
+	std::exit(exitCode);
+}
+
+#define REPORT_ERROR_AND_EXIT(message, exitCode) writeErrorAndExit("ERROR: " message "\n", exitCode)
 
 #ifndef PLATFORM_WINDOWS
 
@@ -243,7 +249,7 @@ bool dataMode_mmap_write(size_t stdinFileSize) noexcept {
 		}
 	}
 	for (; i < stdinFileSize; i++) {
-		if (meta_printf(single_printf_pattern, stdinFileData[i]) < 0) {
+		if (meta_printf(single_printf_pattern.data, stdinFileData[i]) < 0) {
 			REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 		}
 	}
@@ -413,6 +419,7 @@ bool dataMode_read_write() noexcept {
 		if (std::ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
 		return false;
 	}
+
 	if (meta_printf(initial_printf_pattern.data, buffer[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 
 	while (true) {
@@ -487,7 +494,7 @@ use_data_mode_read_vmsplice:
 	return dataMode_read_write<initial_printf_pattern, printf_pattern, single_printf_pattern, chunk_indices...>();
 }
 
-#define optimizedDataTransformationAndOutput(initialPrintfPattern, printfPattern, singlePrintfPattern, ...) [&]() { static constexpr auto initial_printf_pattern = meta::construct_meta_string(initialPrintfPattern); static constexpr auto printf_pattern = meta::construct_meta_string(printfPattern); static constexpr auto single_printf_pattern = meta::construct_meta_string(singlePrintfPattern); return optimizedDataTransformationAndOutput_raw<initial_printf_pattern, printf_pattern, single_printf_pattern, __VA_ARGS__>(); }()
+#define optimizedDataTransformationAndOutput(initialPrintfPattern, printfPattern, singlePrintfPattern, ...) [&]() { static constexpr auto initial_printf_pattern = meta::construct_meta_array(initialPrintfPattern); static constexpr auto printf_pattern = meta::construct_meta_array(printfPattern); static constexpr auto single_printf_pattern = meta::construct_meta_array(singlePrintfPattern); return optimizedDataTransformationAndOutput_raw<initial_printf_pattern, printf_pattern, single_printf_pattern, __VA_ARGS__>(); }()
 
 namespace flags {
 	const char* varname = nullptr;

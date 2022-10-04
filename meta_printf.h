@@ -10,8 +10,6 @@
 #include <cstdlib>
 #include <cstdio>
 
-#include "error_handling.h"
-
 namespace meta {
 
 	// Facilities for handling strings at compile-time:
@@ -49,12 +47,24 @@ namespace meta {
 		// the input parameters.
 	};
 
+	template <typename data_type, size_t length>
+	consteval auto construct_meta_array(const data_type (&source_array)[length]) {
+		meta_array<data_type, length> result;
+		// NOTE: std::copy should work but it doesn't for some reason.
+		// TODO: Figure out why this isn't constexpr even though it should be.
+		//std::copy(source_array, source_array + length, result.data);
+		for (size_t i = 0; i < length; i++) { result[i] = source_array[i]; }
+		return result;
+	}
+
 	template <size_t string_size>
 	using meta_string = meta_array<char, string_size>;
 
 	template <size_t string_size>
 	consteval auto construct_meta_string(const char (&string)[string_size]) {
 		meta_string<string_size - 1> result;
+		// TODO: Same deal.
+		//std::copy(string, string + string_size - 1, result.data);
 		for (size_t i = 0; i < string_size - 1; i++) { result[i] = string[i]; }
 		return result;
 	}
@@ -118,8 +128,10 @@ namespace meta {
 			constexpr const char& operator*() const noexcept { return buffer; }
 
 			streamed_stdout_it& operator++() noexcept {
+				if (amount_of_bytes_written == -1) { return *this; }
 				if (fputc(buffer, stdout) == EOF) {
-					REPORT_ERROR_AND_EXIT("meta_printf failed: failed to write to stdout", EXIT_FAILURE);
+					amount_of_bytes_written = -1;
+					return *this;
 				}
 				amount_of_bytes_written++;
 				return *this;
@@ -187,7 +199,7 @@ namespace meta {
 			op_type_t last_op = op_type_t::INVALID;
 
 			for (size_t i = 0; i < blueprint_length; i++) {
-				parse_table_element table_entry = blueprint_parse_table[(uint16_t)state * 129 + blueprint[i]];
+				parse_table_element table_entry = blueprint_parse_table[state * 129 + blueprint[i]];
 
 				switch (last_op = table_entry.op_type) {
 
@@ -213,10 +225,7 @@ namespace meta {
 
 				}
 			}
-			if (last_op == op_type_t::NOOP) { throw "hi there first"; }
-			if (state == 2) { throw "hi there"; }
-			// TODO: Get rid of uint16_t stuff, it doesn't make any sense.
-			if (blueprint_parse_table[(uint16_t)state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf invalid: blueprint invalid"; }
+			if (blueprint_parse_table[state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf invalid: blueprint invalid"; }
 
 			return result;
 		}
@@ -272,7 +281,7 @@ namespace meta {
 			bool text_encountered = false;
 
 			for (size_t i = 0; i < sizeof(blueprint); i++) {
-				parse_table_element table_entry = blueprint_parse_table[(uint16_t)state * 129 + blueprint[i]];
+				parse_table_element table_entry = blueprint_parse_table[state * 129 + blueprint[i]];
 
 				switch (table_entry.op_type) {
 
@@ -314,7 +323,7 @@ namespace meta {
 				}
 			}
 
-			if (blueprint_parse_table[(uint16_t)state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf invalid: blueprint invalid"; }
+			if (blueprint_parse_table[state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf invalid: blueprint invalid"; }
 
 			if (text_encountered) {
 				program[operation_index].type = op_type_t::TEXT;
@@ -450,4 +459,6 @@ namespace meta {
 // NOTE: So basically, everythings good!
 // TODO: Update above comments to reflect change to lambda for return value.
 
-#define meta_printf(blueprint, ...) [&]() { static constexpr auto meta_printf_blueprint = meta::construct_meta_string(blueprint); static constexpr auto program = meta::printf::create_program<meta_printf_blueprint>(); return meta::printf::execute_program<program, 0>(meta::printf::pseudo_stdout_buffer __VA_OPT__(,) __VA_ARGS__); }()
+#define meta_printf(blueprint, ...) meta_sprintf(meta::printf::pseudo_stdout_buffer, blueprint __VA_OPT__(,) __VA_ARGS__)
+
+// TODO: Technically printf functions are supposed to return int, you should probably do that instead of ptrdiff_t.
