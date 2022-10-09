@@ -461,27 +461,24 @@ namespace meta {
 					return;
 				}
 			}
-			while (true) {
-				while (input >= 100) {
-					const char* substring_ptr = &integer_string_1000_lookup_list[input % 1000];
-					std::copy(substring_ptr, substring_ptr + 3, temp_buffer_ptr);
-					temp_buffer_ptr -= 3;
-					input /= 1000;
-				}
-				if (input >= 10) {
-					const char* substring_ptr = &integer_string_100_lookup_list[input % 100];		// TODO: Why is the new system slower than the old system?
-					std::copy(substring_ptr, substring_ptr + 2, temp_buffer_ptr);
-					outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
-					return;
-				}
-				if (input >= 1) {
-					*temp_buffer_ptr = input + '0';
-					outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
-					return;
-				}
+			while (input >= 100) {
+				const char* substring_ptr = &integer_string_1000_lookup_list[input % 1000];
+				std::copy(substring_ptr, substring_ptr + 3, temp_buffer_ptr);
+				temp_buffer_ptr -= 3;
+				input /= 1000;
+			}
+			if (input >= 10) {
+				const char* substring_ptr = &integer_string_100_lookup_list[input % 100];		// TODO: Why is the new system slower than the old system?
+				std::copy(substring_ptr, substring_ptr + 2, temp_buffer_ptr);
 				outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
 				return;
 			}
+			if (input >= 1) {
+				*temp_buffer_ptr = input + '0';
+				outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
+				return;
+			}
+			outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
 		}
 
 		template <const auto& program, size_t operation_index, typename outputter_t>
