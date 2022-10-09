@@ -68,6 +68,9 @@ namespace meta {
 		return result;
 	}
 
+	template <size_t size>
+	using meta_byte_array = meta_array<uint8_t, size>;
+
 	template <typename integral_type, typename std::enable_if<std::is_integral<integral_type>{}, bool>::type = false>
 	// NOTE: This function is the subject of a linker error when something for example loops forever inside of it.
 	// The runtime code wants to link to this function, but it isn't there in the object files since it never exists at runtime.
@@ -165,8 +168,13 @@ namespace meta {
 				copy_input_from_ptr(ptr, ptr + size);
 			}
 
+			constexpr void write_single_byte_no_increment(char byte) noexcept {
+				*inner_ptr = byte;
+			}
+
 			constexpr void write_single_byte(char byte) noexcept {
-				*(inner_ptr++) = byte;
+				write_single_byte_no_increment(byte);
+				inner_ptr++;
 			}
 
 			constexpr std::ptrdiff_t operator-(const memory_outputter& other) const noexcept {
@@ -188,9 +196,13 @@ namespace meta {
 				copy_input_from_ptr(ptr, end_ptr - ptr);
 			}
 
-			void write_single_byte(char byte) noexcept {
+			void write_single_byte_no_increment(char byte) noexcept {
 				if (amount_of_bytes_written == -1) { return; }
 				if (fputc(byte, stdout) == EOF) { amount_of_bytes_written = -1; }
+			}
+
+			void write_single_byte(char byte) noexcept {
+				write_single_byte_no_increment(byte);
 				amount_of_bytes_written++;
 			}
 
@@ -389,99 +401,30 @@ namespace meta {
 			return program;
 		}
 
-		consteval auto generate_integer_string_1000_lookup_list() {
-			meta_string<1000 * 3> result;
-			for (uint16_t i = 0; i < sizeof(result); i += 3) {
-				result[i + 2] = (i % 10) + '0';
-				uint16_t value = i / 10;
-				result[i + 1] = (value % 10) + '0';
-				result[i] = value / 10 + '0';
-			}
-			return result;
-		}
-
-		inline constexpr auto integer_string_1000_lookup_list = generate_integer_string_1000_lookup_list();
-
-		consteval auto generate_integer_string_100_lookup_list() {
-			meta_string<100 * 2> result;
-			for (uint8_t i = 0; i < sizeof(result); i += 2) {
-				result[i + 1] = (i % 10) + '0';
-				result[i] = i / 10 + '0';
-			}
-			return result;
-		}
-
-		inline constexpr auto integer_string_100_lookup_list = generate_integer_string_100_lookup_list(); 
-
-		template <typename outputter_t, typename integral_type, typename std::enable_if<std::is_integral<integral_type>{}, bool>::type = false>
-		// TODO: This function could 100% be made a fair bit faster, I just don't know exactly how that works yet.
-		constexpr void write_integral(outputter_t& outputter, integral_type input) {
-			if (std::is_same<integral_type, int8_t>{}) { write_integral(outputter, (int16_t)input); return; }
-			// NOTE: integral_type can't be int8_t past this point.
-
-			char temp_buffer[get_max_digits_of_integral_type<integral_type>()];
-			char* temp_buffer_end_ptr = temp_buffer + sizeof(temp_buffer);
-			char* temp_buffer_ptr = temp_buffer_end_ptr - 3;
-
-			if (std::is_signed<integral_type>{}) {
-				if (input < 0) {
-					while (input >= 100) {
-						// NOTE: Making the result of the modulo positive cannot overflow because integral_type cannot be int8_t.
-						const char* substring_ptr = &integer_string_1000_lookup_list[-(input % 1000)];
-						std::copy(substring_ptr, substring_ptr + 3, temp_buffer_ptr);
-						temp_buffer_ptr -= 3;
-						input /= 1000;
-					}
-					// if (input == 0) { ... } <-- NOTE: We could add this, but it wouldn't make any sense since
-					// more numbers have an even number of digits than a number of digits that is divisible by 3.
-					// That means the majority of numbers will need to use the following if statements and only
-					// a minority will be done by this point.
-					// If it were the other way around, we could consider adding the extra if statement for speed.
-					if (input >= 10) {
-						const char* substring_ptr = &integer_string_100_lookup_list[-(input % 100)];
-						std::copy(substring_ptr, substring_ptr + 2, temp_buffer_ptr);
-						*(--temp_buffer_ptr) = '-';
-						outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
-						return;
-					}
-					// NOTE: More numbers have divisible by 3 or 2 amount of digits than not divisible by 3 or 2 amount of digits.
-					// That means most numbers won't need to make use of the following if statement.
-					// Still, we can't add an extra if statement before the next one like we considered above,
-					// because the following is the last if statement. Adding one wouldn't make a difference in
-					// the number of if statements for any type of number and it would be completely useless.
-					if (input >= 1) {
-						*(temp_buffer_ptr--) = -input + '0';
-						*temp_buffer_ptr = '-';
-						outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
-						return;
-					}
-					// NOTE: The following is for when the number of digits was divisible by 3 (didn't hit the if statements).
-					*temp_buffer_ptr = '-';
-					outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
-					return;
+		consteval auto generate_uint8_string_lookup_list() {
+			meta_byte_array<256 * 4> result { };
+			for (uint16_t i = 0, true_index = 0; i < 256; i++, true_index += 4) {
+				uint8_t blank_space = 4;
+				uint16_t value = i;
+				while (true) {
+					result[true_index + (--blank_space)] = (value % 10) + '0';
+					if ((value /= 10) == 0) { break; }
 				}
+				result[true_index] = blank_space;
 			}
-			while (input >= 100) {
-				const char* substring_ptr = &integer_string_1000_lookup_list[input % 1000];
-				std::copy(substring_ptr, substring_ptr + 3, temp_buffer_ptr);
-				temp_buffer_ptr -= 3;
-				input /= 1000;
-			}
-			if (input >= 10) {
-				const char* substring_ptr = &integer_string_100_lookup_list[input % 100];		// TODO: Why is the new system slower than the old system?
-				std::copy(substring_ptr, substring_ptr + 2, temp_buffer_ptr);
-				outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
-				return;
-			}
-			if (input >= 1) {
-				*temp_buffer_ptr = input + '0';
-				outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
-				return;
-			}
-			outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
+			return result;
 		}
 
-		template <const auto& program, size_t operation_index, typename outputter_t>
+		inline constexpr auto uint8_string_lookup_list = generate_uint8_string_lookup_list();
+
+		template <typename outputter_t>
+		constexpr void output_uint8(outputter_t& outputter, uint8_t input) {
+			uint16_t lookup_index = input * 4;
+			uint8_t blank_space = uint8_string_lookup_list[lookup_index];
+			outputter.copy_input_from_ptr((const char*)&uint8_string_lookup_list[lookup_index + blank_space], 4 - blank_space);
+		}
+
+		template <const auto& program, size_t operation_index, bool write_nul_terminator, typename outputter_t>
 		auto execute_program(outputter_t outputter) noexcept -> outputter_t {
 			// NOTE: We have to put constexpr here because or else the lower if statement will get processed even when it doesn't
 			// need to be. This doesn't seem like an issue, but it is:
@@ -508,12 +451,12 @@ namespace meta {
 			// NOTE: Just remember that it behaves as if it completes generating the post-template-instantiation AST before interpreting it
 			// and running compile-time functions.
 			if constexpr (operation_index >= sizeof(program) / sizeof(op)) {
-				outputter.write_single_byte('\0');
+				if (write_nul_terminator) { outputter.write_single_byte_no_increment('\0'); }
 				return outputter;
 			}
 			else if constexpr (program[operation_index].type == op_type_t::TEXT) {
 				outputter.copy_input_from_ptr(program[operation_index].text.ptr, program[operation_index].text.length);
-				return execute_program<program, operation_index + 1>(outputter);
+				return execute_program<program, operation_index + 1, write_nul_terminator>(outputter);
 			}
 			else if constexpr (program[operation_index].type == op_type_t::UINT8) {
 				// NOTE: The condition below cannot be straight false because then the static_assert fires on every build,
@@ -529,7 +472,7 @@ namespace meta {
 			}
 		}
 
-		template <const auto& program, size_t operation_index, typename first_arg_type, typename... rest_arg_types, typename outputter_t>
+		template <const auto& program, size_t operation_index, bool write_nul_terminator, typename first_arg_type, typename... rest_arg_types, typename outputter_t>
 		// NOTE: We could have used C-style variadic functions here, but that's a mess and I despise that.
 		// Instead, we use C++ parameter packs, which are nicer.
 		// Just remember that variadic functions have the ... at the end (optionally preceded by a comma) and
@@ -538,19 +481,19 @@ namespace meta {
 		// compatible in any way AFAIK.
 		auto execute_program(outputter_t outputter, first_arg_type first_arg, rest_arg_types... rest_args) noexcept -> outputter_t {
 			if constexpr (operation_index >= sizeof(program) / sizeof(op)) {
-				outputter.write_single_byte('\0');
+				if (write_nul_terminator) { outputter.write_single_byte_no_increment('\0'); }
 				return outputter;
 			}
 			else if constexpr (program[operation_index].type == op_type_t::TEXT) {
 				outputter.copy_input_from_ptr(program[operation_index].text.ptr, program[operation_index].text.length);
-				return execute_program<program, operation_index + 1>(outputter, first_arg, rest_args...);
+				return execute_program<program, operation_index + 1, write_nul_terminator>(outputter, first_arg, rest_args...);
 			}
 			else if constexpr (program[operation_index].type == op_type_t::UINT8) {
 				// NOTE: One could make this more flexible by allowing non-narrowing conversions for example,
 				// but I'm gonna pass on that for now, so that the code is more explicit.
 				static_assert(std::is_same<first_arg_type, uint8_t>{}, "meta_printf failed: one or more input args have incorrect types");
-				write_integral(outputter, first_arg);
-				return execute_program<program, operation_index + 1>(outputter, rest_args...);
+				output_uint8(outputter, first_arg);
+				return execute_program<program, operation_index + 1, write_nul_terminator>(outputter, rest_args...);
 			}
 		}
 
@@ -565,17 +508,23 @@ namespace meta {
 
 // We have to use static constexpr variable here because binding non-static constexpr to template non-type doesn't work since the address of the variable could potentially be run-time dependant.
 // static makes the variable be located in some global memory, which (as far as the binary file is concerned) has constant addresses.
-#define meta_print_to_outputter(outputter, blueprint, ...) [&]() { static constexpr auto meta_printf_blueprint = meta::construct_meta_string(blueprint); static constexpr auto program = meta::printf::create_program<meta_printf_blueprint>(); return meta::printf::execute_program<program, 0>(outputter __VA_OPT__(,) __VA_ARGS__) - outputter; }()
-// NOTE: We enclose the macro body in a scope (not the same thing as an unnamed namespace) so that it may be used multiple times by the caller.
+#define meta_print_to_outputter(outputter, blueprint, write_nul_terminator, ...) [&]() { static constexpr auto meta_printf_blueprint = meta::construct_meta_string(blueprint); static constexpr auto program = meta::printf::create_program<meta_printf_blueprint>(); return meta::printf::execute_program<program, 0, write_nul_terminator>(outputter __VA_OPT__(,) __VA_ARGS__) - outputter; }()
+// NOTE: We enclose the macro body in a lambda so that it may return a value in a nice stable fashion.
+// NOTE: Also, the scope of the lambda allows us to use the macro multiple times without initialization issues with the static variables.
+// NOTE: We could achieve this as well using simple scope brackets ("{ ... }"), but like I said, we want to return things.
+// NOTE: Fun fact: namespace { ... } wouldn't work here because unnamed namespaces are only valid outside of functions.
 // NOTE: This causes some weirdness in the static constexpr variables:
 //	- what makes sense is that subsequent usages of the macro have different static constexpr variables so everything is fine
 //	- what about using the macro over and over again in a loop though?
-//		- well there, the static constexpr vars are in fact be the same variable, which then only gets initialized once,
+//		- well there, the static constexpr vars are in fact the same variable, which then only gets initialized once,
 //			but it doesn't matter because there is no situation where the value would need to change in such a construction.
 // NOTE: So basically, everythings good!
-// TODO: Update above comments to reflect change to lambda for return value.
 
-#define meta_sprintf(buffer, blueprint, ...) [&]() { meta::printf::memory_outputter mem_output(buffer); return meta_print_to_outputter(mem_output, blueprint __VA_OPT__(,) __VA_ARGS__); }()
-#define meta_printf(blueprint, ...) meta_print_to_outputter(meta::printf::stdout_output, blueprint __VA_OPT__(,) __VA_ARGS__)
+#define meta_sprintf(buffer, blueprint, ...) [&]() { meta::printf::memory_outputter mem_output(buffer); return meta_print_to_outputter(mem_output, blueprint, true __VA_OPT__(,) __VA_ARGS__); }()
+#define meta_printf(blueprint, ...) meta_print_to_outputter(meta::printf::stdout_output, blueprint, true __VA_OPT__(,) __VA_ARGS__)
 
-// TODO: Technically printf functions are supposed to return int, you should probably do that instead of ptrdiff_t.
+#define meta_sprintf_no_terminator(buffer, blueprint, ...) [&]() { meta::printf::memory_outputter mem_output(buffer); return meta_print_to_outputter(mem_output, blueprint, false __VA_OPT__(,) __VA_ARGS__); }()
+#define meta_printf_no_terminator(blueprint, ...) meta_print_to_outputter(meta::printf::stdout_output, blueprint, false __VA_OPT__(,) __VA_ARGS__)
+
+// NOTE: Technically, printf functions return ints, and I should definitely make my implementation more conformant to the standard if/when I make a general purpose meta_printf.
+// Right now, returning std::ptrdiff_t is fine.

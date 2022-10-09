@@ -119,7 +119,6 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 
 	int stdoutPipeBufferSize = fcntl(STDOUT_FILENO, F_GETPIPE_SZ);
 	if (stdoutPipeBufferSize == -1) { return DataTransferExitCode::NEEDS_FALLBACK; }
-	int stdoutBufferSize = stdoutPipeBufferSize + 1;
 
 	struct iovec stdoutBufferMemorySpan_entireLength;
 	stdoutBufferMemorySpan_entireLength.iov_len = stdoutPipeBufferSize;
@@ -128,7 +127,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 	// NOTE: We separate buffers to avoid cache contention. TODO: Figure out how that works.
 	char* stdoutBuffers[2];
 
-	if (mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutBufferSize) == false) { return DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP; }
+	if (mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutPipeBufferSize) == false) { return DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP; }
 
 	bool stdoutBufferToggle = false;
 	char* currentStdoutBuffer = stdoutBuffers[0];
@@ -142,15 +141,15 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 	size_t stdinFileDataCutoff = stdinFileSize - bytes_per_chunk;
 	size_t stdinFileDataPosition = 1;
 
-	int bytesWritten = meta_sprintf(currentStdoutBuffer, initial_printf_pattern.data, stdinFileData[0]);
+	int bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer, initial_printf_pattern.data, stdinFileData[0]);
 	if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 	size_t amountOfBufferFilled = bytesWritten;
 
 	while (true) {
-		while (amountOfBufferFilled < stdoutBufferSize - max_printf_write_length) {
+		while (amountOfBufferFilled <= stdoutPipeBufferSize - max_printf_write_length) {
 			if (stdinFileDataPosition > stdinFileDataCutoff) {
 				for (; stdinFileDataPosition < stdinFileSize; stdinFileDataPosition++) {
-					bytesWritten = meta_sprintf(currentStdoutBuffer + amountOfBufferFilled, single_printf_pattern.data, stdinFileData[stdinFileDataPosition]);
+					bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, single_printf_pattern.data, stdinFileData[stdinFileDataPosition]);
 					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					amountOfBufferFilled += bytesWritten;
 				}
@@ -165,14 +164,14 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 				}
 
 				if (munmap((unsigned char*)stdinFileData, stdinFileSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap input file", EXIT_FAILURE); }
-				if (munmap((unsigned char*)stdoutBuffers[0], stdoutBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
-				if (munmap((unsigned char*)stdoutBuffers[1], stdoutBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap((unsigned char*)stdoutBuffers[0], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap((unsigned char*)stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 
 				return DataTransferExitCode::SUCCESS;
 			}
 
-			bytesWritten = meta_sprintf(currentStdoutBuffer + amountOfBufferFilled, printf_pattern.data, stdinFileData[stdinFileDataPosition + chunk_indices]...);
+			bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, printf_pattern.data, stdinFileData[stdinFileDataPosition + chunk_indices]...);
 			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			stdinFileDataPosition += 8;
 			amountOfBufferFilled += bytesWritten;
@@ -182,7 +181,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 		for (tempBuffer_head = 0; tempBuffer_head < tempBuffer_tail;) {
 			if (stdinFileDataPosition > stdinFileDataCutoff) {
 				for (; stdinFileDataPosition < stdinFileSize; stdinFileDataPosition++) {
-					bytesWritten = meta_sprintf(tempBuffer + tempBuffer_head, single_printf_pattern.data, stdinFileData[stdinFileDataPosition]);
+					bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, single_printf_pattern.data, stdinFileData[stdinFileDataPosition]);
 					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					tempBuffer_head += bytesWritten;
 				}
@@ -203,8 +202,8 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 					}
 
 					if (munmap((unsigned char*)stdinFileData, stdinFileSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap input file", EXIT_FAILURE); }
-					if (munmap((unsigned char*)stdoutBuffers[0], stdoutBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
-					if (munmap((unsigned char*)stdoutBuffers[1], stdoutBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+					if (munmap((unsigned char*)stdoutBuffers[0], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+					if (munmap((unsigned char*)stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 					return DataTransferExitCode::SUCCESS;
 				}
@@ -217,8 +216,8 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 				}
 
 				if (munmap((unsigned char*)stdinFileData, stdinFileSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap input file", EXIT_FAILURE); }
-				if (munmap((unsigned char*)stdoutBuffers[0], stdoutBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
-				if (munmap((unsigned char*)stdoutBuffers[1], stdoutBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap((unsigned char*)stdoutBuffers[0], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap((unsigned char*)stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 				amountOfBufferFilled = tempBuffer_head - tempBuffer_tail;
 				if (fwrite(tempBuffer + tempBuffer_tail, sizeof(char), amountOfBufferFilled, stdout) < amountOfBufferFilled) {
@@ -228,7 +227,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 				return DataTransferExitCode::SUCCESS;
 			}
 
-			bytesWritten = meta_sprintf(tempBuffer + tempBuffer_head, printf_pattern.data, stdinFileData[stdinFileDataPosition + chunk_indices]...);
+			bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, printf_pattern.data, stdinFileData[stdinFileDataPosition + chunk_indices]...);
 			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			stdinFileDataPosition += 8;
 			tempBuffer_head += bytesWritten;
@@ -255,15 +254,15 @@ bool dataMode_mmap_write(size_t stdinFileSize) noexcept {
 	const unsigned char* stdinFileData = mmapStdinFile(stdinFileSize);
 	if (stdinFileData == MAP_FAILED) { return false; }
 
-	if (meta_printf(initial_printf_pattern.data, stdinFileData[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
+	if (meta_printf_no_terminator(initial_printf_pattern.data, stdinFileData[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 	size_t i;
 	for (i = 1; i < stdinFileSize + 1 - bytes_per_chunk; i += bytes_per_chunk) {
-		if (meta_printf(printf_pattern.data, stdinFileData[i + chunk_indices]...) < 0) {
+		if (meta_printf_no_terminator(printf_pattern.data, stdinFileData[i + chunk_indices]...) < 0) {
 			REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 		}
 	}
 	for (; i < stdinFileSize; i++) {
-		if (meta_printf(single_printf_pattern.data, stdinFileData[i]) < 0) {
+		if (meta_printf_no_terminator(single_printf_pattern.data, stdinFileData[i]) < 0) {
 			REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 		}
 	}
@@ -279,7 +278,6 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 
 	int stdoutPipeBufferSize = fcntl(STDOUT_FILENO, F_GETPIPE_SZ);
 	if (stdoutPipeBufferSize == -1) { return DataTransferExitCode::NEEDS_FALLBACK; }
-	int stdoutBufferSize = stdoutPipeBufferSize + 1;
 
 	struct iovec stdoutBufferMemorySpan_entireLength;
 	stdoutBufferMemorySpan_entireLength.iov_len = stdoutPipeBufferSize;
@@ -288,7 +286,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 	// NOTE: We separate buffers to avoid cache contention. TODO: Figure out how that works.
 	char* stdoutBuffers[2];
 
-	if (mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutBufferSize) == false) { return DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP; }
+	if (mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutPipeBufferSize) == false) { return DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP; }
 
 	bool stdoutBufferToggle = false;
 	char* currentStdoutBuffer = stdoutBuffers[0];
@@ -303,18 +301,18 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 		return DataTransferExitCode::NO_INPUT_DATA;
 	}
 
-	int bytesWritten = meta_sprintf(currentStdoutBuffer, initial_printf_pattern.data, inputBuffer[0]);
+	int bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer, initial_printf_pattern.data, inputBuffer[0]);
 	if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 	size_t amountOfBufferFilled = bytesWritten;
 
 	while (true) {
-		while (amountOfBufferFilled < stdoutBufferSize - max_printf_write_length) {
+		while (amountOfBufferFilled <= stdoutPipeBufferSize - max_printf_write_length) {
 			unsigned char bytesRead = fread(inputBuffer, sizeof(char), bytes_per_chunk, stdin);
 			if (bytesRead < bytes_per_chunk) {
 				if (ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
 
 				for (unsigned char i = 0; i < bytesRead; i++) {
-					bytesWritten = meta_sprintf(currentStdoutBuffer + amountOfBufferFilled, single_printf_pattern.data, inputBuffer[i]);
+					bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, single_printf_pattern.data, inputBuffer[i]);
 					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					amountOfBufferFilled += bytesWritten;
 				}
@@ -328,13 +326,13 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 					REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 				}
 
-				if (munmap(stdoutBuffers[0], stdoutBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
-				if (munmap(stdoutBuffers[1], stdoutBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap(stdoutBuffers[0], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap(stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 				return DataTransferExitCode::SUCCESS;
 			}
 
-			bytesWritten = meta_sprintf(currentStdoutBuffer + amountOfBufferFilled, printf_pattern.data, inputBuffer[chunk_indices]...);
+			bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, printf_pattern.data, inputBuffer[chunk_indices]...);
 			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			amountOfBufferFilled += bytesWritten;
 		}
@@ -346,7 +344,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 				if (ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
 
 				for (unsigned char i = 0; i < bytesRead; i++) {
-					bytesWritten = meta_sprintf(tempBuffer + tempBuffer_head, single_printf_pattern.data, inputBuffer[i]);
+					bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, single_printf_pattern.data, inputBuffer[i]);
 					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					tempBuffer_head += bytesWritten;
 				}
@@ -366,8 +364,8 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 						REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 					}
 
-					if (munmap(stdoutBuffers[0], stdoutBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
-					if (munmap(stdoutBuffers[1], stdoutBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+					if (munmap(stdoutBuffers[0], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+					if (munmap(stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 					return DataTransferExitCode::SUCCESS;
 				}
@@ -379,8 +377,8 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 					REPORT_ERROR_AND_EXIT("vmsplice failed", EXIT_FAILURE);
 				}
 
-				if (munmap(stdoutBuffers[0], stdoutBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
-				if (munmap(stdoutBuffers[1], stdoutBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap(stdoutBuffers[0], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap(stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 				amountOfBufferFilled = tempBuffer_head - tempBuffer_tail;
 				if (fwrite(tempBuffer + tempBuffer_tail, sizeof(char), amountOfBufferFilled, stdout) < amountOfBufferFilled) {
@@ -390,7 +388,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 				return DataTransferExitCode::SUCCESS;
 			}
 
-			bytesWritten = meta_sprintf(tempBuffer + tempBuffer_head, printf_pattern.data, inputBuffer[chunk_indices]...);
+			bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, printf_pattern.data, inputBuffer[chunk_indices]...);
 			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			tempBuffer_head += bytesWritten;
 		}
@@ -434,13 +432,13 @@ bool dataMode_read_write() noexcept {
 		return false;
 	}
 
-	if (meta_printf(initial_printf_pattern.data, buffer[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
+	if (meta_printf_no_terminator(initial_printf_pattern.data, buffer[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 
 	while (true) {
 		unsigned char bytesRead = std::fread(buffer, sizeof(char), bytes_per_chunk, stdin);
 
 		if (bytesRead == bytes_per_chunk) {
-			if (meta_printf(printf_pattern.data, buffer[chunk_indices]...) < 0) {
+			if (meta_printf_no_terminator(printf_pattern.data, buffer[chunk_indices]...) < 0) {
 				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}
 			continue;
@@ -449,7 +447,7 @@ bool dataMode_read_write() noexcept {
 		if (std::ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
 
 		for (unsigned char i = 0; i < bytesRead; i++) {
-			if (meta_printf(single_printf_pattern.data, buffer[i]) < 0) {
+			if (meta_printf_no_terminator(single_printf_pattern.data, buffer[i]) < 0) {
 				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}
 		}
@@ -593,6 +591,15 @@ void outputSource(const char* language) noexcept {
 	REPORT_ERROR_AND_EXIT("invalid language", EXIT_SUCCESS);
 }
 
+// TODO: I think the main source of slowness is fwrite and fread.
+// We need a custom streamed I/O implementation does the refilling of the buffer asynchronously.
+// That way, we can write and do calculations at the same time, we'll be condensing the timeline and making everything a lot faster.
+// Same with input. I don't want a straight circular buffer that writes and reads every chance it gets since that's a lot of unnecessary syscalls, which doesn't sound like a good idea.
+// Maybe each buffer has two segments, each refills while the other is being used for reading/writing. When seg 2 is done and seg 1 gets selected again, the selector needs to check if reading/writing is done on seg 1.
+// Same with transition from seg 1 to seg 2.
+
+// TODO: Actually, consider making vm splice asynchronous as well. That virtual to physical mapping that it does is also kind of slow, we could smush that together with other timings if we do it in parallel with twice the buffer space to compensate for it.
+
 int main(int argc, const char* const * argv) noexcept {
 	// C++ standard I/O can suck it, it's super slow. We're using C standard I/O. Maybe I'll make a wrapper library for C++ eventually.
 
@@ -605,13 +612,16 @@ int main(int argc, const char* const * argv) noexcept {
 	// Windows. We do it like this instead.
 	// NOTE: Isn't a problem since setbuffer is just an alias for setvbuf(fd, buf, buf ? _IOFBF : _IONBF, size)
 	// anyway.
-	char stdin_buffer[BUFSIZ];
-	std::setvbuf(stdin, stdin_buffer, _IOFBF, BUFSIZ);
-	char stdout_buffer[BUFSIZ];
-	std::setvbuf(stdout, stdout_buffer, _IOFBF, BUFSIZ);
+	char stdin_buffer[std::numeric_limits<uint16_t>::max()];
+	std::setvbuf(stdin, stdin_buffer, _IOFBF, sizeof(stdin_buffer));
+	char stdout_buffer[std::numeric_limits<uint16_t>::max()];
+	std::setvbuf(stdout, stdout_buffer, _IOFBF, sizeof(stdout_buffer));
 
 	// NOTE: One would think that BUFSIZ is the default buffer size for C buffered I/O.
-	// Apparently it isn't, because the above yields performance improvements.
+	// Apparently it isn't, because the above yields performance improvements when explicitly setting to BUFSIZ.
+	// NOTE: Right now, we are however setting it 65536, because that's a better number.
+	// There are no downsides to making the number larger for this use-case, and 65536 works a lot better because
+	// most pipes are that big.
 
 	int normalArgIndex = manageArgs(argc, argv);
 	outputSource(argv[normalArgIndex]);
