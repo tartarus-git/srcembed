@@ -50,8 +50,7 @@ namespace meta {
 	template <typename data_type, size_t length>
 	consteval auto construct_meta_array(const data_type (&source_array)[length]) {
 		meta_array<data_type, length> result;
-		// NOTE: std::copy should work but it doesn't for some reason.
-		// TODO: Figure out why this isn't constexpr even though it should be.
+		// NOTE: std::copy should be constexpr but it isn't because of outdated stdlib, see below somewhere.
 		//std::copy(source_array, source_array + length, result.data);
 		for (size_t i = 0; i < length; i++) { result[i] = source_array[i]; }
 		return result;
@@ -63,7 +62,7 @@ namespace meta {
 	template <size_t string_size>
 	consteval auto construct_meta_string(const char (&string)[string_size]) {
 		meta_string<string_size - 1> result;
-		// TODO: Same deal.
+		// NOTE: Same deal as above.
 		//std::copy(string, string + string_size - 1, result.data);
 		for (size_t i = 0; i < string_size - 1; i++) { result[i] = string[i]; }
 		return result;
@@ -104,6 +103,7 @@ namespace meta {
 
 		// NOTE: We stopped using iterators because they require use of fputc with every character.
 		// NOTE: The new system can fwrite large chunks, which is faster.
+
 		/*
 		// NOTE: In case (in the future) you think this iterator is botched and not standards-conforming,
 		// it is AFAIK completely conformant to the standard. Everything is A-OK!
@@ -230,7 +230,7 @@ namespace meta {
 			return table;
 		}
 
-		constexpr auto blueprint_parse_table = generate_blueprint_parse_table();
+		inline constexpr auto blueprint_parse_table = generate_blueprint_parse_table();
 
 		struct blueprint_string {
 			const char* ptr;
@@ -342,7 +342,7 @@ namespace meta {
 				switch (table_entry.op_type) {
 
 				// NOTE: throw is illegal in a consteval function, but only if the interpreter actually hits it.
-				// This is perfect for us, since we want to trigger an error anyway.
+				// This is perfect for us, since we want to trigger an error only if control flow gets here.
 				case op_type_t::INVALID: throw "meta_printf invalid: blueprint invalid";
 				// NOTE: In a constexpr function, throw will force evaluation at runtime, since it's illegal at compile-time.
 				// NOTE: But constexpr functions must have at least one set of args that allows compile-time execution,
@@ -378,7 +378,6 @@ namespace meta {
 
 				}
 			}
-
 			if (blueprint_parse_table[state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf invalid: blueprint invalid"; }
 
 			if (text_encountered) {
@@ -390,31 +389,99 @@ namespace meta {
 			return program;
 		}
 
+		consteval auto generate_integer_string_1000_lookup_list() {
+			meta_string<1000 * 3> result;
+			for (uint16_t i = 0; i < sizeof(result); i += 3) {
+				result[i + 2] = (i % 10) + '0';
+				uint16_t value = i / 10;
+				result[i + 1] = (value % 10) + '0';
+				result[i] = value / 10 + '0';
+			}
+			return result;
+		}
+
+		inline constexpr auto integer_string_1000_lookup_list = generate_integer_string_1000_lookup_list();
+
+		consteval auto generate_integer_string_100_lookup_list() {
+			meta_string<100 * 2> result;
+			for (uint8_t i = 0; i < sizeof(result); i += 2) {
+				result[i + 1] = (i % 10) + '0';
+				result[i] = i / 10 + '0';
+			}
+			return result;
+		}
+
+		inline constexpr auto integer_string_100_lookup_list = generate_integer_string_100_lookup_list(); 
+
 		template <typename outputter_t, typename integral_type, typename std::enable_if<std::is_integral<integral_type>{}, bool>::type = false>
 		// TODO: This function could 100% be made a fair bit faster, I just don't know exactly how that works yet.
 		constexpr void write_integral(outputter_t& outputter, integral_type input) {
+			if (std::is_same<integral_type, int8_t>{}) { write_integral(outputter, (int16_t)input); return; }
+			// NOTE: integral_type can't be int8_t past this point.
+
 			char temp_buffer[get_max_digits_of_integral_type<integral_type>()];
 			char* temp_buffer_end_ptr = temp_buffer + sizeof(temp_buffer);
-			char* temp_buffer_ptr = temp_buffer_end_ptr - 1;
+			char* temp_buffer_ptr = temp_buffer_end_ptr - 3;
 
 			if (std::is_signed<integral_type>{}) {
 				if (input < 0) {
-					while (true) {
-						*(temp_buffer_ptr--) = -(input % 10) + '0';
-						input /= 10;
-						if (input == 0) { break; }
+					while (input >= 100) {
+						// NOTE: Making the result of the modulo positive cannot overflow because integral_type cannot be int8_t.
+						const char* substring_ptr = &integer_string_1000_lookup_list[-(input % 1000)];
+						std::copy(substring_ptr, substring_ptr + 3, temp_buffer_ptr);
+						temp_buffer_ptr -= 3;
+						input /= 1000;
 					}
+					// if (input == 0) { ... } <-- NOTE: We could add this, but it wouldn't make any sense since
+					// more numbers have an even number of digits than a number of digits that is divisible by 3.
+					// That means the majority of numbers will need to use the following if statements and only
+					// a minority will be done by this point.
+					// If it were the other way around, we could consider adding the extra if statement for speed.
+					if (input >= 10) {
+						const char* substring_ptr = &integer_string_100_lookup_list[-(input % 100)];
+						std::copy(substring_ptr, substring_ptr + 2, temp_buffer_ptr);
+						*(--temp_buffer_ptr) = '-';
+						outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
+						return;
+					}
+					// NOTE: More numbers have divisible by 3 or 2 amount of digits than not divisible by 3 or 2 amount of digits.
+					// That means most numbers won't need to make use of the following if statement.
+					// Still, we can't add an extra if statement before the next one like we considered above,
+					// because the following is the last if statement. Adding one wouldn't make a difference in
+					// the number of if statements for any type of number and it would be completely useless.
+					if (input >= 1) {
+						*(temp_buffer_ptr--) = -input + '0';
+						*temp_buffer_ptr = '-';
+						outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
+						return;
+					}
+					// NOTE: The following is for when the number of digits was divisible by 3 (didn't hit the if statements).
 					*temp_buffer_ptr = '-';
+					outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
+					return;
 				}
 			}
 			while (true) {
-				if (input < 10) { break; }
-				*(temp_buffer_ptr--) = (input % 10) + '0';
-				input /= 10;
+				while (input >= 100) {
+					const char* substring_ptr = &integer_string_1000_lookup_list[input % 1000];
+					std::copy(substring_ptr, substring_ptr + 3, temp_buffer_ptr);
+					temp_buffer_ptr -= 3;
+					input /= 1000;
+				}
+				if (input >= 10) {
+					const char* substring_ptr = &integer_string_100_lookup_list[input % 100];		// TODO: Why is the new system slower than the old system?
+					std::copy(substring_ptr, substring_ptr + 2, temp_buffer_ptr);
+					outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
+					return;
+				}
+				if (input >= 1) {
+					*temp_buffer_ptr = input + '0';
+					outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
+					return;
+				}
+				outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
+				return;
 			}
-			*temp_buffer_ptr = input + '0';
-
-			outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
 		}
 
 		template <const auto& program, size_t operation_index, typename outputter_t>
