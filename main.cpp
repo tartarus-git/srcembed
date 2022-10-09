@@ -46,6 +46,24 @@ void writeErrorAndExit(const char (&message)[message_size], int exitCode) noexce
 
 #define REPORT_ERROR_AND_EXIT(message, exitCode) writeErrorAndExit("ERROR: " message "\n", exitCode)
 
+/*
+EPIPHANY:
+	- the second best way to transmit data is to have super big buffers and read, then write with those buffers (unless you've got splice and such)
+	- this'll save on syscalls, which is great.
+	- there'll be big gaps in between sends where you refill your buffer, but that doesn't matter because with smaller buffers, there might be smaller gaps, but there'll be more of them, so it equals out
+	- if the program after you is the bottleneck, your sends will take forever, but it doesn't matter because the speed of the write doesn't change anything about the gap equality law thing above.
+	- same thing with reads
+
+	- the absolute best way to make use of reads and writes is to double your buffer and read and write simultaeniously
+	- you'll always be reading and writing at the same time, double the speed
+
+	- if the goal is to make the buffers as big as possible within the constraints of your usage and system and such, that begs the question:
+		- what the hell is BUFSIZ for?
+			- Maybe that's just the recommended buffer size because they didn't want programs using too much RAM?
+			- I can't see any other reason since it offers no performance benefits apparently.
+			- TODO: Research this, maybe I've made a crucial mistake in my thought process.
+*/
+
 #ifndef PLATFORM_WINDOWS
 
 bool mmapWriteDoubleBuffer(char*& bufferA, char*& bufferB, size_t bufferSize) noexcept {
