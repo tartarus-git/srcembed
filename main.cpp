@@ -10,7 +10,7 @@
 #include <cstdio>		// for buffered I/O
 #include <cstring>		// for std::strcmp()
 
-#include "meta_printf.h"
+#include "meta_printf.h"	// for compile-time printf
 
 #ifdef PLATFORM_WINDOWS
 
@@ -50,30 +50,44 @@ void writeErrorAndExit(const char (&message)[message_size], int exitCode) noexce
 
 bool mmapWriteDoubleBuffer(char*& bufferA, char*& bufferB, size_t bufferSize) noexcept {
 	// TODO: Consider picking the best huge page size for the job dynamically instead of just using the default one.
-	bufferA = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_HUGETLB, -1, 0);
+	bufferA = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
 	if (bufferA == MAP_FAILED) {
-		bufferA = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+		bufferA = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 		if (bufferA == MAP_FAILED) { return false; }
 
-		bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-		if (bufferB == MAP_FAILED) { return false; }
+		bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (bufferB == MAP_FAILED) {
+			// TODO: Make all the error messages nice looking and descriptive.
+			if (munmap(bufferA, bufferSize) == -1) {
+				REPORT_ERROR_AND_EXIT("mmapWriteDoubleBuffer encountered fatal error: failed to munmap bufferA", EXIT_FAILURE);
+			}
+			return false;
+		}
 
 		return true;
 	}
 
-	bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_HUGETLB, -1, 0);
+	bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
 	if (bufferB == MAP_FAILED) {
-		bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-		if (bufferB == MAP_FAILED) { return false; }
+		bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if (bufferB == MAP_FAILED) {
+			// bufferSize has to be a multiple of huge page size if huge pages are used, fix that. TODO
+			// TODO: You can go and get the huge page size from /proc/meminfo. Parse that file.
+			// TODO: Also remove this unmap because the caller takes care of that.
+			if (munmap(bufferA, bufferSize) == -1) {
+				REPORT_ERROR_AND_EXIT("mmapWriteDoubleBuffer encountered fatal error: failed to munmap bufferA", EXIT_FAILURE);
+			}
+			return false;
+		}
 	}
 
 	return true;
 }
 
 const unsigned char* mmapStdinFile(size_t stdinFileSize) noexcept {
-	// TODO: Put huge pages in this. There's no reason not to as long as you check beforehand whether they'll cover all the memory that
-	// you need, since you're only allowed a couple.
+	// NOTE: Can't see huge pages being beneficial here, so we're leaving them out.
 	unsigned char* stdinFileData = (unsigned char*)mmap(nullptr, stdinFileSize, PROT_READ, MAP_PRIVATE | MAP_NORESERVE | MAP_POPULATE, STDIN_FILENO, 0);
+	// NOTE: We don't handle errors on purpose, the caller handles those.
 
 	// NOTE: I'm pretty sure these don't overwrite each other, but just in case, I put the more important one second.
 	posix_madvise(stdinFileData, stdinFileSize, POSIX_MADV_WILLNEED);

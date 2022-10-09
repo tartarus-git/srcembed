@@ -102,6 +102,9 @@ namespace meta {
 
 	namespace printf {
 
+		// NOTE: We stopped using iterators because they require use of fputc with every character.
+		// NOTE: The new system can fwrite large chunks, which is faster.
+		/*
 		// NOTE: In case (in the future) you think this iterator is botched and not standards-conforming,
 		// it is AFAIK completely conformant to the standard. Everything is A-OK!
 		class streamed_stdout_it {
@@ -140,6 +143,59 @@ namespace meta {
 			// NOTE: The following function isn't part of LegacyOutputIterator, which is what this class is conforming to.
 			// Luckily, extra functions don't hurt so this doesn't bother anyone.
 			constexpr std::ptrdiff_t operator-(const streamed_stdout_it& other) const noexcept {
+				return amount_of_bytes_written - other.amount_of_bytes_written;
+			}
+		};
+		*/
+
+		class memory_outputter {
+			char* inner_ptr;
+
+		public:
+			constexpr memory_outputter(char* ptr) noexcept : inner_ptr(ptr) { }
+
+			// NOTE: This should be able to be constexpr since std::copy should be constexpr,
+			// but it isn't because I think I'm running an outdated stdlib.
+			// There isn't any newer one for my system though (I think, at least not on apt), so it is what it is.
+			void copy_input_from_ptr(const char* ptr, const char* end_ptr) noexcept {
+				inner_ptr = std::copy(ptr, end_ptr, inner_ptr);
+			}
+
+			void copy_input_from_ptr(const char* ptr, size_t size) noexcept {
+				copy_input_from_ptr(ptr, ptr + size);
+			}
+
+			constexpr void write_single_byte(char byte) noexcept {
+				*(inner_ptr++) = byte;
+			}
+
+			constexpr std::ptrdiff_t operator-(const memory_outputter& other) const noexcept {
+				return inner_ptr - other.inner_ptr;
+			}
+		};
+
+		class streamed_stdout_outputter {
+			std::ptrdiff_t amount_of_bytes_written = 0;
+
+		public:
+			void copy_input_from_ptr(const char* ptr, size_t size) noexcept {
+				if (amount_of_bytes_written == -1) { return; }
+				if (fwrite(ptr, sizeof(char), size, stdout) < size) { amount_of_bytes_written = -1; }
+				amount_of_bytes_written += size;
+			}
+
+			void copy_input_from_ptr(const char* ptr, const char* end_ptr) noexcept {
+				copy_input_from_ptr(ptr, end_ptr - ptr);
+			}
+
+			void write_single_byte(char byte) noexcept {
+				if (amount_of_bytes_written == -1) { return; }
+				if (fputc(byte, stdout) == EOF) { amount_of_bytes_written = -1; }
+				amount_of_bytes_written++;
+			}
+
+			// NOTE: Be careful with this, if both instances have error set, then this will return 0 and not -1 like expected.
+			constexpr std::ptrdiff_t operator-(const streamed_stdout_outputter& other) const noexcept {
 				return amount_of_bytes_written - other.amount_of_bytes_written;
 			}
 		};
@@ -334,9 +390,9 @@ namespace meta {
 			return program;
 		}
 
-		template <typename output_it, typename integral_type, typename std::enable_if<std::is_integral<integral_type>{}, bool>::type = false>
+		template <typename outputter_t, typename integral_type, typename std::enable_if<std::is_integral<integral_type>{}, bool>::type = false>
 		// TODO: This function could 100% be made a fair bit faster, I just don't know exactly how that works yet.
-		constexpr output_it write_integral(output_it buffer, integral_type input) {
+		constexpr void write_integral(outputter_t& outputter, integral_type input) {
 			char temp_buffer[get_max_digits_of_integral_type<integral_type>()];
 			char* temp_buffer_end_ptr = temp_buffer + sizeof(temp_buffer);
 			char* temp_buffer_ptr = temp_buffer_end_ptr - 1;
@@ -358,11 +414,11 @@ namespace meta {
 			}
 			*temp_buffer_ptr = input + '0';
 
-			return std::copy(temp_buffer_ptr, temp_buffer_end_ptr, buffer);
+			outputter.copy_input_from_ptr(temp_buffer_ptr, temp_buffer_end_ptr);
 		}
 
-		template <const auto& program, size_t operation_index, typename output_it>
-		auto execute_program(output_it buffer) noexcept -> output_it {
+		template <const auto& program, size_t operation_index, typename outputter_t>
+		auto execute_program(outputter_t outputter) noexcept -> outputter_t {
 			// NOTE: We have to put constexpr here because or else the lower if statement will get processed even when it doesn't
 			// need to be. This doesn't seem like an issue, but it is:
 			// Since the lower if has constexpr, the expression inside is evaluated while instantiating the template, to determine if the if-statements
@@ -388,12 +444,12 @@ namespace meta {
 			// NOTE: Just remember that it behaves as if it completes generating the post-template-instantiation AST before interpreting it
 			// and running compile-time functions.
 			if constexpr (operation_index >= sizeof(program) / sizeof(op)) {
-				*buffer = '\0';
-				return buffer;
+				outputter.write_single_byte('\0');
+				return outputter;
 			}
 			else if constexpr (program[operation_index].type == op_type_t::TEXT) {
-				output_it new_buffer = std::copy(program[operation_index].text.ptr, program[operation_index].text.ptr + program[operation_index].text.length, buffer);
-				return execute_program<program, operation_index + 1>(new_buffer);
+				outputter.copy_input_from_ptr(program[operation_index].text.ptr, program[operation_index].text.length);
+				return execute_program<program, operation_index + 1>(outputter);
 			}
 			else if constexpr (program[operation_index].type == op_type_t::UINT8) {
 				// NOTE: The condition below cannot be straight false because then the static_assert fires on every build,
@@ -409,36 +465,32 @@ namespace meta {
 			}
 		}
 
-		template <const auto& program, size_t operation_index, typename first_arg_type, typename... rest_arg_types, typename output_it>
+		template <const auto& program, size_t operation_index, typename first_arg_type, typename... rest_arg_types, typename outputter_t>
 		// NOTE: We could have used C-style variadic functions here, but that's a mess and I despise that.
 		// Instead, we use C++ parameter packs, which are nicer.
 		// Just remember that variadic functions have the ... at the end (optionally preceded by a comma) and
 		// parameter packs have the ... after the type (or after the typename/class keyword).
 		// I'm very sure that the ... of a variadic function cannot accept a C++ parameter pack, so these two concepts are not
 		// compatible in any way AFAIK.
-			// TODO: Iterator forces us to use fputc even for strings, which is inefficient.
-			// Instead, create a custom container class with a defined API and accept that.
-			// Then all you need to do is transform pointers and stdout into that standard container before passing them into
-			// this function. Very simple.
-		auto execute_program(output_it buffer, first_arg_type first_arg, rest_arg_types... rest_args) noexcept -> output_it {
+		auto execute_program(outputter_t outputter, first_arg_type first_arg, rest_arg_types... rest_args) noexcept -> outputter_t {
 			if constexpr (operation_index >= sizeof(program) / sizeof(op)) {
-				*buffer = '\0';
-				return buffer;
+				outputter.write_single_byte('\0');
+				return outputter;
 			}
 			else if constexpr (program[operation_index].type == op_type_t::TEXT) {
-				output_it new_buffer = std::copy(program[operation_index].text.ptr, program[operation_index].text.ptr + program[operation_index].text.length, buffer);
-				return execute_program<program, operation_index + 1>(new_buffer, first_arg, rest_args...);
+				outputter.copy_input_from_ptr(program[operation_index].text.ptr, program[operation_index].text.length);
+				return execute_program<program, operation_index + 1>(outputter, first_arg, rest_args...);
 			}
 			else if constexpr (program[operation_index].type == op_type_t::UINT8) {
 				// NOTE: One could make this more flexible by allowing non-narrowing conversions for example,
 				// but I'm gonna pass on that for now, so that the code is more explicit.
 				static_assert(std::is_same<first_arg_type, uint8_t>{}, "meta_printf failed: one or more input args have incorrect types");
-				output_it new_buffer = write_integral(buffer, first_arg);
-				return execute_program<program, operation_index + 1>(new_buffer, rest_args...);
+				write_integral(outputter, first_arg);
+				return execute_program<program, operation_index + 1>(outputter, rest_args...);
 			}
 		}
 
-		inline constexpr streamed_stdout_it pseudo_stdout_buffer = streamed_stdout_it::make_compile_time_instance();
+		inline constexpr streamed_stdout_outputter stdout_output;
 		// NOTE: constexpr variables are const by default, but not inline by default.
 		// Since const global variables have internal linkage instead of externel linkage like normal variables,
 		// including this header in multiple files would still work without the above inline.
@@ -449,7 +501,7 @@ namespace meta {
 
 // We have to use static constexpr variable here because binding non-static constexpr to template non-type doesn't work since the address of the variable could potentially be run-time dependant.
 // static makes the variable be located in some global memory, which (as far as the binary file is concerned) has constant addresses.
-#define meta_sprintf(buffer, blueprint, ...) [&]() { static constexpr auto meta_printf_blueprint = meta::construct_meta_string(blueprint); static constexpr auto program = meta::printf::create_program<meta_printf_blueprint>(); return meta::printf::execute_program<program, 0>(buffer __VA_OPT__(,) __VA_ARGS__) - buffer; }()
+#define meta_print_to_outputter(outputter, blueprint, ...) [&]() { static constexpr auto meta_printf_blueprint = meta::construct_meta_string(blueprint); static constexpr auto program = meta::printf::create_program<meta_printf_blueprint>(); return meta::printf::execute_program<program, 0>(outputter __VA_OPT__(,) __VA_ARGS__) - outputter; }()
 // NOTE: We enclose the macro body in a scope (not the same thing as an unnamed namespace) so that it may be used multiple times by the caller.
 // NOTE: This causes some weirdness in the static constexpr variables:
 //	- what makes sense is that subsequent usages of the macro have different static constexpr variables so everything is fine
@@ -459,6 +511,7 @@ namespace meta {
 // NOTE: So basically, everythings good!
 // TODO: Update above comments to reflect change to lambda for return value.
 
-#define meta_printf(blueprint, ...) meta_sprintf(meta::printf::pseudo_stdout_buffer, blueprint __VA_OPT__(,) __VA_ARGS__)
+#define meta_sprintf(buffer, blueprint, ...) [&]() { meta::printf::memory_outputter mem_output(buffer); return meta_print_to_outputter(mem_output, blueprint __VA_OPT__(,) __VA_ARGS__); }()
+#define meta_printf(blueprint, ...) meta_print_to_outputter(meta::printf::stdout_output, blueprint __VA_OPT__(,) __VA_ARGS__)
 
 // TODO: Technically printf functions are supposed to return int, you should probably do that instead of ptrdiff_t.
