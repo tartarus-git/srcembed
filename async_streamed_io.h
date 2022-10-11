@@ -8,7 +8,7 @@
 
 template <size_t buffer_size>
 class StdinStream {
-	static volatile char buffer[buffer_size * 2];
+	static volatile char buffer[buffer_size * 2];		// NOTE: Doubling not strictly necessary but ensures consistency with StdoutStream.
 	static volatile size_t buffer_user_read_head = 0;
 	static volatile size_t buffer_stream_write_head = 0;
 
@@ -19,9 +19,13 @@ class StdinStream {
 	static void reader_thread_code() noexcept {
 		while (reader_thread_should_be_active) {
 			// TODO: Do some sort of polling thing so that it doesn't block unnecessarily.
-			if (buffer_user_read_head > buffer_stream_write_head + 1) {	// NOTE: This branch ain't so bad because it's outcome shouldn't really ever change once the program is running, either the user reads fast enough or too slow, but he reads at constant speed.
+			if (buffer_user_read_head > buffer_stream_write_head + 1) {	// NOTE: This branch ain't so bad because it's outcome shouldn't really ever change once the program is running, if the user reads fast enough, it'll always be true, and if he doesn't it'll always be false. The user reads at a constant speed though, so the outcome shouldn't change.
 				ssize_t bytes_read = read(STDIN_FILENO, buffer + buffer_stream_write_head, buffer_user_read_head - buffer_stream_write_head - 1);
-				// TODO: Check for read error and report through flag to other thread.
+				if (bytes_read == -1) {
+					reader_thread_should_be_active = false;
+					return;
+				}
+
 				buffer_stream_write_head += bytes_read;
 				continue;
 			}
@@ -39,6 +43,11 @@ class StdinStream {
 
 														// TODO: Unless of course this bool cast trick implies an if statement, inspect assembly to find out.
 				ssize_t bytes_read = read(STDIN_FILENO, buffer + buffer_stream_write_head, buffer_size - buffer_stream_write_head - !(bool)buffer_user_read_head);
+				if (bytes_read == -1) {
+					reader_thread_should_be_active = false;
+					return;
+				}
+
 				buffer_stream_write_head = (buffer_stream_write_head + bytes_read) % buffer_size;
 				continue;
 
@@ -52,9 +61,11 @@ class StdinStream {
 		reader_thread = std::thread(reader_thread_code);
 	}
 
-	static void read(char* output_ptr, size_t output_size) noexcept {
+	static bool read(char* output_ptr, size_t output_size) noexcept {
+		if (!reader_thread_should_be_active) { return false; }
 		std::copy(buffer + buffer_user_read_head, buffer + buffer_stream_write_head, output_ptr);
 		buffer_user_read_thread = buffer_stream_write_head;
+		return true;
 	}
 
 	static void dispose() noexcept {
