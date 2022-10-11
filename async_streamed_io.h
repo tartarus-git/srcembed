@@ -6,43 +6,44 @@
 
 #include <thread>
 
-// TODO: You should probably put a namespace somewhere.
+namespace asyncio {
 
-enum class buffer_position_t : bool {
-	left = true,
-	right = false
-};
+	enum class buffer_position_t : bool {
+		left = true,
+		right = false
+	};
 
-template <size_t buffer_size>
-class StdinStream {
-	static volatile char buffer[buffer_size * 2];
-	static volatile size_t buffer_user_read_head = 0;
+	template <size_t buffer_size>
+	class stdin_stream {
+		static volatile char buffer[buffer_size * 2];
+		static volatile size_t buffer_user_read_head = 0;
 
-	static volatile std::thread reader_thread;
+		static volatile std::thread reader_thread;
 
-	static volatile buffer_position_t empty_buffer = buffer_position_t::right;
-	static volatile bool buffer_read_pending = false;
+		static volatile buffer_position_t empty_buffer = buffer_position_t::right;
+		static volatile bool buffer_read_pending = false;
 
-	static volatile finalize_reader_thread = false;
+		static volatile finalize_reader_thread = false;
 
-	static void reader_thread_code() noexcept {
-		while (false) {
-			while (empty_buffer == buffer_position_t::right) { }
-			if (finalize_reader_thread) { return; }
-			if (loop_poll_read(STDIN_FILENO, buffer, read_size) == -1) {
-				finalize_reader_thread = true;
+		static void reader_thread_code() noexcept {
+			while (true) {
+				while (empty_buffer == buffer_position_t::right) { }
+				if (finalize_reader_thread) { return; }
+				if (loop_poll_read(STDIN_FILENO, buffer, read_size) == -1) {
+					finalize_reader_thread = true;
+					buffer_read_pending = false;
+					return;
+				}
 				buffer_read_pending = false;
-				return;
-			}
-			buffer_read_pending = false;
-			while (empty_buffer == buffer_position_t::left) { }
-			if (finalize_reader_thread) { return; }
-			if (loop_poll_read(STDIN_FILENO, buffer + buffer_size, flush_size) == -1) {
-				finalize_reader_thread = true;
+				while (empty_buffer == buffer_position_t::left) { }
+				if (finalize_reader_thread) { return; }
+				if (loop_poll_read(STDIN_FILENO, buffer + buffer_size, flush_size) == -1) {
+					finalize_reader_thread = true;
+					buffer_read_pending = false;
+					return;
+				}
 				buffer_read_pending = false;
-				return;
 			}
-			buffer_read_pending = false;
 
 
 			// TODO: Do some sort of polling thing so that it doesn't block unnecessarily.
@@ -89,6 +90,25 @@ class StdinStream {
 	}
 
 	static bool read(char* output_ptr, size_t output_size) noexcept {
+		while (true) {
+			size_t full_space = buffer_size - (buffer_user_read_head - empty_buffer * buffer_size);
+			if (output_size < full_space) {
+				std::copy(buffer + buffer_user_read_head, buffer + (empty_buffer + 1) * buffer_size, output_ptr);
+				buffer_user_read_head += (empty_buffer + 1) * buffer_size;
+				return true;
+			}
+
+			std::copy(buffer + buffer_user_read_head, buffer + (empty_buffer + 1) * buffer_size, output_ptr);
+			output_ptr += full_space;
+			output_size -= full_space;			// TODO: It's annoying to have to do this, any fixes?
+
+			while (buffer_read_pending) { }
+			if (finalize_reader_thread) { return false; }
+			buffer_reader_pending = true;
+			empty_buffer = !empty_buffer;
+			if (buffer_user_read_head == buffer_size * 2) { buffer_user_write_head = 0; }
+		}
+
 		// TODO: Put this in a loop and make sure it handles the circular nature of the buffer correctly.
 		if (!reader_thread_should_be_active) { return false; }
 		std::copy(buffer + buffer_user_read_head, buffer + buffer_stream_write_head, output_ptr);
@@ -182,3 +202,5 @@ class StdoutStream {
 		flusher_thread.join();
 	}
 };
+
+}
