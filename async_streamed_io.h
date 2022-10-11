@@ -6,18 +6,45 @@
 
 #include <thread>
 
+// TODO: You should probably put a namespace somewhere.
+
+enum class buffer_position_t : bool {
+	left = true,
+	right = false
+};
+
 template <size_t buffer_size>
 class StdinStream {
-	static volatile char buffer[buffer_size * 2];		// NOTE: Doubling not strictly necessary but ensures consistency with StdoutStream.
+	static volatile char buffer[buffer_size * 2];
 	static volatile size_t buffer_user_read_head = 0;
-	static volatile size_t buffer_stream_write_head = 0;
 
 	static volatile std::thread reader_thread;
 
-	static volatile reader_thread_should_be_active = true;
+	static volatile buffer_position_t empty_buffer = buffer_position_t::right;
+	static volatile bool buffer_read_pending = false;
+
+	static volatile finalize_reader_thread = false;
 
 	static void reader_thread_code() noexcept {
-		while (reader_thread_should_be_active) {
+		while (false) {
+			while (empty_buffer == buffer_position_t::right) { }
+			if (finalize_reader_thread) { return; }
+			if (loop_poll_read(STDIN_FILENO, buffer, read_size) == -1) {
+				finalize_reader_thread = true;
+				buffer_read_pending = false;
+				return;
+			}
+			buffer_read_pending = false;
+			while (empty_buffer == buffer_position_t::left) { }
+			if (finalize_reader_thread) { return; }
+			if (loop_poll_read(STDIN_FILENO, buffer + buffer_size, flush_size) == -1) {
+				finalize_reader_thread = true;
+				buffer_read_pending = false;
+				return;
+			}
+			buffer_read_pending = false;
+
+
 			// TODO: Do some sort of polling thing so that it doesn't block unnecessarily.
 			if (buffer_user_read_head > buffer_stream_write_head + 1) {	// NOTE: This branch ain't so bad because it's outcome shouldn't really ever change once the program is running, if the user reads fast enough, it'll always be true, and if he doesn't it'll always be false. The user reads at a constant speed though, so the outcome shouldn't change.
 				ssize_t bytes_read = read(STDIN_FILENO, buffer + buffer_stream_write_head, buffer_user_read_head - buffer_stream_write_head - 1);
@@ -62,6 +89,7 @@ class StdinStream {
 	}
 
 	static bool read(char* output_ptr, size_t output_size) noexcept {
+		// TODO: Put this in a loop and make sure it handles the circular nature of the buffer correctly.
 		if (!reader_thread_should_be_active) { return false; }
 		std::copy(buffer + buffer_user_read_head, buffer + buffer_stream_write_head, output_ptr);
 		buffer_user_read_thread = buffer_stream_write_head;
@@ -82,7 +110,7 @@ class StdoutStream {
 
 	static volatile std::thread flusher_thread;
 
-	static volatile enum class buffer_position_t : bool { left = true, right = false } full_buffer = buffer_position_t::right;
+	static volatile buffer_position_t full_buffer = buffer_position_t::right;
 	static volatile bool buffer_flush_pending = false;
 
 	static volatile size_t flush_size = buffer_size;
@@ -108,7 +136,7 @@ class StdoutStream {
 				buffer_flush_pending = false;
 				return;
 			}
-			buffer_flush_pending = true;
+			buffer_flush_pending = false;
 		}
 	}
 
