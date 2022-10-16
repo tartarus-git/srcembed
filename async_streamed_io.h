@@ -22,105 +22,89 @@ namespace asyncio {
 
 		static volatile buffer_position_t empty_buffer = buffer_position_t::right;
 		static volatile bool buffer_read_pending = false;
+		static volatile size_t read_size = buffer_size;
 
 		static volatile finalize_reader_thread = false;
+
+		int8_t read_full_buffer(void* buf, size_t count) noexcept {
+			while (true) {
+				if (finalize_reader_thread) { return 0; }
+
+				ssize_t bytes_read = read(STDIN_FILENO, buf, count);
+				if (bytes_read == -1 && errno != EAGAIN) { return -1; }
+
+				count -= bytes_read;
+				if (count == 0) { return 1; }
+				buf += bytes_read;
+			}
+		}
 
 		static void reader_thread_code() noexcept {
 			while (true) {
 				while (empty_buffer == buffer_position_t::right) { }
-				if (finalize_reader_thread) { return; }
-				if (loop_poll_read(STDIN_FILENO, buffer, read_size) == -1) {
+
+				int8_t read_result = read_full_buffer(buffer, read_size);
+				switch (read_result) {
+				case -1:
 					finalize_reader_thread = true;
 					buffer_read_pending = false;
-					return;
+				case 0: return;
 				}
+
 				buffer_read_pending = false;
+
 				while (empty_buffer == buffer_position_t::left) { }
-				if (finalize_reader_thread) { return; }
-				if (loop_poll_read(STDIN_FILENO, buffer + buffer_size, flush_size) == -1) {
+
+				read_result = read_full_buffer(buffer + buffer_size, read_size);
+				switch (read_result) {
+				case -1:
 					finalize_reader_thread = true;
 					buffer_read_pending = false;
-					return;
+				case 0: return;
 				}
+
 				buffer_read_pending = false;
 			}
-
-
-			// TODO: Do some sort of polling thing so that it doesn't block unnecessarily.
-			if (buffer_user_read_head > buffer_stream_write_head + 1) {	// NOTE: This branch ain't so bad because it's outcome shouldn't really ever change once the program is running, if the user reads fast enough, it'll always be true, and if he doesn't it'll always be false. The user reads at a constant speed though, so the outcome shouldn't change.
-				ssize_t bytes_read = read(STDIN_FILENO, buffer + buffer_stream_write_head, buffer_user_read_head - buffer_stream_write_head - 1);
-				if (bytes_read == -1) {
-					reader_thread_should_be_active = false;
-					return;
-				}
-
-				buffer_stream_write_head += bytes_read;
-				continue;
-			}
-			/*
-			if (buffer_user_read_head == 0) {
-				ssize_t bytes_read = read(STDIN_FILENO, buffer + buffer_stream_write_head, buffer_size - buffer_stream_write_head - 1);
-				buffer_stream_write_head += bytes_read;
-				continue;
-			}
-			ssize_t bytes_read = read(STDIN_FILENO, buffer + buffer_stream_write_head, buffer_size - buffer_stream_write_head);
-			buffer_stream_write_head = (buffer_stream_write_head + bytes_read) % buffer_size;	// NOTE: div/modulo with fixed divisor is a lot faster than with variable divisor.
-			*/
-
-// NOTE: Version 1 (above) could be faster, but I really don't think so. Version 2 (below) is probably faster because it has one less branch in it and that branch periodically faults the branch predictor, which is bad.
-
-														// TODO: Unless of course this bool cast trick implies an if statement, inspect assembly to find out.
-				ssize_t bytes_read = read(STDIN_FILENO, buffer + buffer_stream_write_head, buffer_size - buffer_stream_write_head - !(bool)buffer_user_read_head);
-				if (bytes_read == -1) {
-					reader_thread_should_be_active = false;
-					return;
-				}
-
-				buffer_stream_write_head = (buffer_stream_write_head + bytes_read) % buffer_size;
-				continue;
-
-			// TODO: Should the above be replaced with an if statement, I feel like the branch predictor might miss it a little too much or something. We might be better off with the fast modulo.
-			// TODO: If new data is available but the user hasn't popped off the old data yet, this loop will spam the read syscall super fast. Test if that's alright.
-			// I'm okay with massive CPU core draw while it's in this busy loop, because that's not what this is optimized for, but is it good to be calling syscalls that fast. I don't see why not.
-		}
-	}
-
-	static void initialize() noexcept {
-		reader_thread = std::thread(reader_thread_code);
-	}
-
-	static bool read(char* output_ptr, size_t output_size) noexcept {
-		while (true) {
-			size_t full_space = buffer_size - (buffer_user_read_head - empty_buffer * buffer_size);
-			if (output_size < full_space) {
-				std::copy(buffer + buffer_user_read_head, buffer + (empty_buffer + 1) * buffer_size, output_ptr);
-				buffer_user_read_head += (empty_buffer + 1) * buffer_size;
-				return true;
-			}
-
-			std::copy(buffer + buffer_user_read_head, buffer + (empty_buffer + 1) * buffer_size, output_ptr);
-			output_ptr += full_space;
-			output_size -= full_space;			// TODO: It's annoying to have to do this, any fixes?
-
-			while (buffer_read_pending) { }
-			if (finalize_reader_thread) { return false; }
-			buffer_reader_pending = true;
-			empty_buffer = !empty_buffer;
-			if (buffer_user_read_head == buffer_size * 2) { buffer_user_write_head = 0; }
 		}
 
-		// TODO: Put this in a loop and make sure it handles the circular nature of the buffer correctly.
-		if (!reader_thread_should_be_active) { return false; }
-		std::copy(buffer + buffer_user_read_head, buffer + buffer_stream_write_head, output_ptr);
-		buffer_user_read_thread = buffer_stream_write_head;
-		return true;
-	}
+	public:
+		static bool initialize() noexcept {
+			int stdin_fd_flags = fcntl(STDIN_FILENO, F_GETFL);
+			if (stdin_fd_flags == -1) { return false; }
+			if (fcntl(STDIN_FILENO, F_SETFL, stdin_fd_flags | O_NONBLOCK) == -1) { return false; }
 
-	static void dispose() noexcept {
-		reader_thread_should_be_active = false;
-		reader_thread.join();
-	}
-};
+			reader_thread = std::thread(reader_thread_code);
+
+			return true;
+		}
+
+		static bool read(char* output_ptr, size_t output_size) noexcept {
+			while (true) {
+				size_t full_space = buffer_size - (buffer_user_read_head - empty_buffer * buffer_size);
+				if (output_size < full_space) {
+					std::copy(buffer + buffer_user_read_head, output_size, output_ptr);
+					buffer_user_read_head += output_size;
+					return true;
+				}
+	
+				std::copy(buffer + buffer_user_read_head, buffer + buffer_user_read_head + full_space, output_ptr);
+				output_ptr += full_space;
+				output_size -= full_space;			// TODO: It's annoying to have to do this, any fixes?
+	
+				while (buffer_read_pending) { }
+				if (finalize_reader_thread) { return false; }
+				buffer_read_pending = true;
+				empty_buffer = !empty_buffer;
+				buffer_user_read_head += full_space;
+				if (buffer_user_read_head == buffer_size * 2) { buffer_user_write_head = 0; }
+			}
+		}
+
+		static void dispose() noexcept {
+			reader_thread_should_be_active = false;
+			reader_thread.join();
+		}
+	};
 
 template <size_t buffer_size>
 class StdoutStream {
@@ -136,8 +120,6 @@ class StdoutStream {
 	static volatile size_t flush_size = buffer_size;
 
 	static volatile bool finalize_flusher_thread = false;
-
-	// TODO: Understand forwarding references. What if we want to only accept rvalue refs in template function, what the hell would we do then?
 
 	static void flusher_thread_code() noexcept {
 		while (true) {
@@ -192,6 +174,7 @@ class StdoutStream {
 		if (finalize_flusher_thread) { return false; }
 		buffer_flush_pending = true;
 		full_buffer = !full_buffer;
+		// TODO: set flush_size back to buffer_size somewhere here.
 		return true;
 	}
 
