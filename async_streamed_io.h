@@ -22,7 +22,6 @@ namespace asyncio {
 
 		static volatile buffer_position_t empty_buffer = buffer_position_t::right;
 		static volatile bool buffer_read_pending = false;
-		static volatile size_t read_size = buffer_size;
 
 		static volatile finalize_reader_thread = false;
 
@@ -43,7 +42,7 @@ namespace asyncio {
 			while (true) {
 				while (empty_buffer == buffer_position_t::right) { }
 
-				int8_t read_result = read_full_buffer(buffer, read_size);
+				int8_t read_result = read_full_buffer(buffer, buffer_size);
 				switch (read_result) {
 				case -1:
 					finalize_reader_thread = true;
@@ -55,7 +54,7 @@ namespace asyncio {
 
 				while (empty_buffer == buffer_position_t::left) { }
 
-				read_result = read_full_buffer(buffer + buffer_size, read_size);
+				read_result = read_full_buffer(buffer + buffer_size, buffer_size);
 				switch (read_result) {
 				case -1:
 					finalize_reader_thread = true;
