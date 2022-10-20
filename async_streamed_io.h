@@ -15,16 +15,18 @@ namespace asyncio {
 
 	template <size_t buffer_size>
 	class stdin_stream {
-		static volatile char buffer[buffer_size * 2];
+		static inline volatile char buffer[buffer_size * 2];
+
 		static constexpr volatile char* buffer_half_end_ptr = buffer + buffer_size;
-		static volatile char* buffer_user_read_head = 0;
 
-		static volatile std::thread reader_thread;
+		static inline volatile char* buffer_user_read_head = 0;
 
-		static volatile buffer_position_t empty_buffer = buffer_position_t::right;
-		static volatile bool buffer_read_pending = false;
+		static inline volatile std::thread reader_thread;
 
-		static volatile finalize_reader_thread = false;
+		static inline volatile buffer_position_t empty_buffer = buffer_position_t::right;
+		static inline volatile bool buffer_read_pending = false;
+
+		static inline volatile finalize_reader_thread = false;
 
 		int8_t read_full_buffer(void* buf, size_t count) noexcept {
 			while (true) {
@@ -100,13 +102,16 @@ namespace asyncio {
 	
 				while (buffer_read_pending) { }
 				if (finalize_reader_thread) { return false; }
+
+				// NOTE: We do this here
+				// so that an error doesn't cause buffer bytes to be eaten (it would do that if this were above the if-stm)
+				buffer_user_read_head = current_buffer_end_ptr - empty_buffer * (buffer_size * 2);
+				// TODO: See if this would be faster with an if-statement, considering that we call read with small chunks
+				// instead of big ones.
+				// TODO: Put it down like you did the one below, looks better and is more understandable.
+
 				buffer_read_pending = true;
 				empty_buffer = !empty_buffer;
-
-				// NOTE: We do this here for two reasons:
-				// 1. So that an error doesn't cause buffer bytes to be eaten (it would do that if this were above the if-stm)
-				// 2. So we can use the toggled version of empty_buffer.
-				buffer_user_read_head = empty_buffer * current_buffer_end_ptr;
 			}
 		}
 
@@ -118,19 +123,21 @@ namespace asyncio {
 	};
 
 	template <size_t buffer_size>
-	class StdoutStream {
-		// TODO: put these outside of the class, basically figure out the details of the syntax for this.
-		static volatile char buffer[buffer_size * 2];
-		static volatile size_t buffer_user_write_head = 0;
+	class stdout_stream {
+		static inline volatile char buffer[buffer_size * 2];
 
-		static volatile std::thread flusher_thread;
+		static constexpr volatile char* buffer_half_end_ptr = buffer + buffer_size;
 
-		static volatile buffer_position_t full_buffer = buffer_position_t::right;
-		static volatile bool buffer_flush_pending = false;
+		static inline volatile size_t buffer_user_write_head = 0;
 
-		static volatile size_t flush_size = buffer_size;
+		static inline volatile std::thread flusher_thread;
 
-		static volatile bool finalize_flusher_thread = false;
+		static inline volatile buffer_position_t full_buffer = buffer_position_t::right;
+		static inline volatile bool buffer_flush_pending = false;
+
+		static inline volatile size_t flush_size = buffer_size;
+
+		static inline volatile bool finalize_flusher_thread = false;
 
 		static void flusher_thread_code() noexcept {
 			while (true) {
@@ -164,43 +171,61 @@ namespace asyncio {
 			flusher_thread = std::thread(flusher_thread_code);
 		}
 
-		// TODO: Go through this function and make it optimal.
 		static bool write(const char* input_ptr, size_t input_size) noexcept {
 			while (true) {
-				// NOTE: Converting the full_buffer bool to another integer type is totally fine, since converted bools always equal 0 or 1, all other non-zero values get transformed to 1 on conversion.
-				// NOTE: Unless of course bools cannot contain other non-zero values because converting to bool might snap to 0 or 1 already. That's an implementation detail though. Whether that detail is implemented by the standard or left up to the compiler I cannot say without further research.
-				size_t free_space = buffer_size - (buffer_user_write_head - full_buffer * buffer_size);
+				// NOTE: Converting the full_buffer bool to another integer type is totally fine, since converted bools
+				// always equal 0 or 1, all other non-zero values get transformed to 1 on conversion.
+				// NOTE: Unless of course bools cannot contain other non-zero values because converting to bool might snap to
+				// 0 or 1 already. That's an implementation detail though. Whether that detail is implemented by the
+				// standard or left up to the compiler I cannot say without further research.
+				const volatile char* const free_space = full_buffer * buffer_half_end_ptr + buffer_half_end_ptr - buffer_user_write_head;
+				// TODO: This is great for pretty large writes and reads, but for small chunks, would it be better
+				// to have 2 while loops and alternate between them with if-stm every time one is full?
+				// Within those loops, you wouldn't have to algebraically check which buffer is full since it's a given.
+				// You should test this theory with some benchmarking.
 				if (input_size < free_space) {
-					buffer_user_write_head = std::copy(input_ptr, input_ptr + input_size, buffer + buffer_user_write_head);
+					buffer_user_write_head = std::copy(input_ptr, input_ptr + input_size, buffer_user_write_head);
 					return true;
 				}
 
-				buffer_user_write_head = std::copy(input_ptr, input_ptr + free_space, buffer + buffer_user_write_head);
-				input_ptr += free_space;
-				input_size -= free_space;			// TODO: It's annoying to have to do this, any fixes?
+				const char* new_input_ptr = input_ptr + free_space;
+				buffer_user_write_head = std::copy(input_ptr, new_input_ptr, buffer_user_write_head);
+				input_ptr = new_input_ptr;
+				input_size -= free_space;
 
 				while (buffer_flush_pending) { }
 				if (finalize_flusher_thread) { return false; }
 				buffer_flush_pending = true;
 				full_buffer = !full_buffer;
-				if (buffer_user_write_head == buffer_size * 2) { buffer_user_write_head = 0; }
+
+				// TODO: Same TODO as above.
+				buffer_user_write_head = buffer + full_buffer * buffer_size;
 			}
 		}
 
 		static bool flush() noexcept {
-			// TODO: Make sure this function makes sense and then see if you should put some comments in.
-			flush_size = buffer_user_write_head - full_buffer * buffer_size;
+			// Set flush_size to the exact amount that still needs to be flushed.
+			flush_size = buffer_user_write_head - (buffer + full_buffer * buffer_size);
 
+			// Wait for other buffer to finish flushing.
 			while (buffer_flush_pending) { }
 
+			// If error occurred, report it.
 			if (finalize_flusher_thread) { return false; }
 
+			// Start flush.
 			buffer_flush_pending = true;
 			full_buffer = !full_buffer;
 
+			// Wait for it to finish.
 			while (buffer_flush_pending) { }
 
+			// Reset flush_size to default.
 			flush_size = buffer_size;
+
+			// Though both buffers are empty (theoretically we could set this to start), it needs to be at start of correct buffer
+			// for the rest of the system to work.
+			buffer_user_write_head = buffer + full_buffer * buffer_size;
 
 			return true;
 		}
