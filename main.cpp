@@ -10,6 +10,8 @@
 #include <cstdio>		// for buffered I/O
 #include <cstring>		// for std::strcmp()
 
+#include "async_streamed_io.h"
+
 #include "meta_printf.h"	// for compile-time printf
 
 #ifdef PLATFORM_WINDOWS

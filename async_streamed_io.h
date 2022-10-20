@@ -2,7 +2,7 @@
 
 #include <unistd.h>
 
-#include <algorithm>	// TODO: for std::copy right?
+#include <algorithm> // TODO: For std::copy right?
 
 #include <thread>
 
@@ -13,26 +13,38 @@ namespace asyncio {
 		right = false
 	};
 
+	buffer_position_t operator!(buffer_position_t buffer_position) noexcept { return (buffer_position_t)!(bool)buffer_position; }
+
 	template <size_t buffer_size>
 	class stdin_stream {
+		// NOTE: Multi-byte volatile variables could technically tear when reading from them.
+		// Because the write to the variable happens in multiple stages, so the read could see multiple versions where
+		// individual bytes were changed. This shouldn't happen as much on modern machines because they operate on units
+		// that are bigger than a byte for load/store and such.
+		// Maybe it could still happen on x64 when you write to a 64-bit variable, since it might still write just 32 bits to RAM
+		// at a time, idk what the bus looks like on x64. It definitely happens (AFAIK) when you write to a 64-bit variable on x86,
+		// since that requires two separate RAM writes.
+
 		static inline volatile char buffer[buffer_size * 2];
 
 		static constexpr volatile char* buffer_half_end_ptr = buffer + buffer_size;
 
 		static inline volatile char* buffer_user_read_head = 0;
 
-		static inline volatile std::thread reader_thread;
+		static inline std::thread reader_thread;
+		// TODO: Write a note about cache coherency and memory ordering and why volatile works for you because of some guarantees
+		// that the processor makes.
 
 		static inline volatile buffer_position_t empty_buffer = buffer_position_t::right;
 		static inline volatile bool buffer_read_pending = false;
 
-		static inline volatile finalize_reader_thread = false;
+		static inline volatile bool finalize_reader_thread = false;
 
-		int8_t read_full_buffer(void* buf, size_t count) noexcept {
+		static int8_t read_full_buffer(char* buf, size_t count) noexcept {
 			while (true) {
 				if (finalize_reader_thread) { return 0; }
 
-				ssize_t bytes_read = read(STDIN_FILENO, buf, count);
+				ssize_t bytes_read = ::read(STDIN_FILENO, buf, count);
 				bool nothing_to_read = (errno == EAGAIN || errno == EWOULDBLOCK);
 				if (bytes_read == -1 && !nothing_to_read) { return -1; }
 				bytes_read += nothing_to_read;
@@ -79,16 +91,25 @@ namespace asyncio {
 			if (stdin_fd_flags == -1) { return false; }
 			if (fcntl(STDIN_FILENO, F_SETFL, stdin_fd_flags | O_NONBLOCK) == -1) { return false; }
 
+			// INTERESTING NOTE: std::thread cannot be made volatile, but it doesn't have to be.
+			// In C++, memory is "committed" before calling functions, because those functions could theoretically
+			// read from the memory, and the correct value needs to be there.
+			// Obviously, because of the as-if rule, if the compiler knows that a function doesn't use a specific variable,
+			// it's free to keep it in some register (as long as that register stays free long enough) instead of writing it.
+			// Thread functions are run via syscall, and the compiler doesn't know what code is in the syscall,
+			// so I presume all "hot" variables are written to memory before calling the syscall.
+			// This might seem a slight bit inefficient and dirty, but it's the only clean way of handling this.
+			// Any other system would induce a lot of complexity and confusion I presume.
 			reader_thread = std::thread(reader_thread_code);
 
 			return true;
 		}
 
 		static bool read(char* output_ptr, size_t output_size) noexcept {
-			const volatile char* read_end_ptr = buffer_user_read_head + output_size;
+			volatile char* read_end_ptr = buffer_user_read_head + output_size;
 			while (true) {
 				// TODO: What does double volatile mean with pointers?
-				const volatile char* const current_buffer_end_ptr = empty_buffer * buffer_half_end_ptr + buffer_half_end_ptr;
+				volatile char* const current_buffer_end_ptr = buffer_half_end_ptr + (bool)empty_buffer * buffer_size;
 				if (read_end_ptr < current_buffer_end_ptr) {
 					std::copy(buffer_user_read_head, read_end_ptr, output_ptr);
 					buffer_user_read_head = read_end_ptr;
@@ -105,7 +126,7 @@ namespace asyncio {
 
 				// NOTE: We do this here
 				// so that an error doesn't cause buffer bytes to be eaten (it would do that if this were above the if-stm)
-				buffer_user_read_head = current_buffer_end_ptr - empty_buffer * (buffer_size * 2);
+				buffer_user_read_head = current_buffer_end_ptr - (bool)empty_buffer * (buffer_size * 2);
 				// TODO: See if this would be faster with an if-statement, considering that we call read with small chunks
 				// instead of big ones.
 				// TODO: Put it down like you did the one below, looks better and is more understandable.
@@ -128,9 +149,9 @@ namespace asyncio {
 
 		static constexpr volatile char* buffer_half_end_ptr = buffer + buffer_size;
 
-		static inline volatile size_t buffer_user_write_head = 0;
+		static inline volatile char* buffer_user_write_head = 0;
 
-		static inline volatile std::thread flusher_thread;
+		static inline std::thread flusher_thread;
 
 		static inline volatile buffer_position_t full_buffer = buffer_position_t::right;
 		static inline volatile bool buffer_flush_pending = false;
@@ -145,7 +166,7 @@ namespace asyncio {
 
 				if (finalize_flusher_thread) { return; }
 
-				if (write(STDOUT_FILENO, buffer, flush_size) == -1) {
+				if (::write(STDOUT_FILENO, buffer, flush_size) == -1) {
 					finalize_flusher_thread = true;
 					buffer_flush_pending = false;
 					return;
@@ -157,7 +178,7 @@ namespace asyncio {
 
 				if (finalize_flusher_thread) { return; }
 
-				if (write(STDOUT_FILENO, buffer + buffer_size, flush_size) == -1) {
+				if (::write(STDOUT_FILENO, buffer + buffer_size, flush_size) == -1) {
 					finalize_flusher_thread = true;
 					buffer_flush_pending = false;
 					return;
@@ -178,7 +199,7 @@ namespace asyncio {
 				// NOTE: Unless of course bools cannot contain other non-zero values because converting to bool might snap to
 				// 0 or 1 already. That's an implementation detail though. Whether that detail is implemented by the
 				// standard or left up to the compiler I cannot say without further research.
-				const volatile char* const free_space = full_buffer * buffer_half_end_ptr + buffer_half_end_ptr - buffer_user_write_head;
+				const size_t free_space = buffer_half_end_ptr + (bool)full_buffer * buffer_size - buffer_user_write_head;
 				// TODO: This is great for pretty large writes and reads, but for small chunks, would it be better
 				// to have 2 while loops and alternate between them with if-stm every time one is full?
 				// Within those loops, you wouldn't have to algebraically check which buffer is full since it's a given.
@@ -199,13 +220,13 @@ namespace asyncio {
 				full_buffer = !full_buffer;
 
 				// TODO: Same TODO as above.
-				buffer_user_write_head = buffer + full_buffer * buffer_size;
+				buffer_user_write_head = buffer + (bool)full_buffer * buffer_size;
 			}
 		}
 
 		static bool flush() noexcept {
 			// Set flush_size to the exact amount that still needs to be flushed.
-			flush_size = buffer_user_write_head - (buffer + full_buffer * buffer_size);
+			flush_size = buffer_user_write_head - (buffer + (bool)full_buffer * buffer_size);
 
 			// Wait for other buffer to finish flushing.
 			while (buffer_flush_pending) { }
@@ -225,7 +246,7 @@ namespace asyncio {
 
 			// Though both buffers are empty (theoretically we could set this to start), it needs to be at start of correct buffer
 			// for the rest of the system to work.
-			buffer_user_write_head = buffer + full_buffer * buffer_size;
+			buffer_user_write_head = buffer + (bool)full_buffer * buffer_size;
 
 			return true;
 		}
