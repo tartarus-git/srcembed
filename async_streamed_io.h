@@ -15,6 +15,32 @@ namespace asyncio {
 
 	buffer_position_t operator!(buffer_position_t buffer_position) noexcept { return (buffer_position_t)!(bool)buffer_position; }
 
+	/*
+	   Everyone is saying I shouldn't use volatile for multi-threaded logistics and such, but I think my implementation
+	   should be fine.
+		IMPORTANT:
+			- all volatile does is make sure that the memory accesses aren't optimized out and are done in the exact
+				order that you type them in (relative to all other volatile accesses, since non-volatile stuff can still
+				move around)
+			- that's perfect for me, the one other weird thing is caches.
+			- since RAM writes go to cache first and don't propegate to actual RAM for a while, it's not immediately
+				obvious that a second thread will see the data that you've written, even if the operation has passed,
+				since it could still be stuck in a higher cache somewhere that is core specific.
+			- the reason this doesn't happen is because of cache coherency (I think that's what it's called).
+				- basically, it's designed so that an access to a memory location that theoretically has been changed
+					causes the relevant data to be transported to the right caches.
+				- there's multiple ways to accomplish this, but the important thing is that it makes it so that
+					after a write, all reads from that location will return the correct data, which is exactly
+					what is required for an application such as this.
+				- almost all modern hardware is cache coherent apparently, so this program is cross-platform
+					in that regard I suppose.
+				- BTW: this behaviour makes total sense because the general concensus on caches is that the software
+					is not supposed to know about them AFAIK. Obviously the software does know about them
+					and optimizing for caches is incredibly effective, but the point is that it's expected that
+					you can imagine interfacing directly with RAM, everything is supposed to emulate that, which is
+					practical for us because that's the exact behaviour we need.
+	*/
+
 	template <size_t buffer_size>
 	class stdin_stream {
 		// NOTE: Multi-byte volatile variables could technically tear when reading from them.
@@ -32,8 +58,6 @@ namespace asyncio {
 		static inline volatile char* buffer_user_read_head = 0;
 
 		static inline std::thread reader_thread;
-		// TODO: Write a note about cache coherency and memory ordering and why volatile works for you because of some guarantees
-		// that the processor makes.
 
 		static inline volatile buffer_position_t empty_buffer = buffer_position_t::right;
 		static inline volatile bool buffer_read_pending = false;
@@ -108,7 +132,12 @@ namespace asyncio {
 		static bool read(char* output_ptr, size_t output_size) noexcept {
 			volatile char* read_end_ptr = buffer_user_read_head + output_size;
 			while (true) {
-				// TODO: What does double volatile mean with pointers?
+				// NOTE: The volatile after the * is the only volatile that is relevant for a theoretical pure
+				// dereference, without an attached read or write to the variable. Idk if that exists in
+				// C++ because every dereference I've ever seen is attached to a read or write, which then also
+				// looks at the volatile before the *.
+				// The only volatile necessary here is the one before the *, since the pointer itself is only accessed
+				// from one thread.
 				volatile char* const current_buffer_end_ptr = buffer_half_end_ptr + (bool)empty_buffer * buffer_size;
 				if (read_end_ptr < current_buffer_end_ptr) {
 					std::copy(buffer_user_read_head, read_end_ptr, output_ptr);
