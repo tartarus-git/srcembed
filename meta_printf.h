@@ -7,9 +7,6 @@
 
 #include <algorithm>
 
-#include <cstdlib>
-#include <cstdio>
-
 namespace meta {
 
 	// Facilities for handling strings at compile-time:
@@ -188,7 +185,7 @@ namespace meta {
 		public:
 			void copy_input_from_ptr(const char* ptr, size_t size) noexcept {
 				if (amount_of_bytes_written == -1) { return; }
-				if (fwrite(ptr, sizeof(char), size, stdout) < size) { amount_of_bytes_written = -1; }
+				if (!stdout_stream::write(ptr, size)) { amount_of_bytes_written = -1; }
 				amount_of_bytes_written += size;
 			}
 

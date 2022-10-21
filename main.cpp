@@ -12,6 +12,10 @@
 
 #include "async_streamed_io.h"
 
+// These (technically just stdout_stream) need to be located before meta_printf.h include.
+using stdin_stream = asyncio::stdin_stream<10>;
+using stdout_stream = asyncio::stdout_stream<10>;
+
 #include "meta_printf.h"	// for compile-time printf
 
 #ifdef PLATFORM_WINDOWS
@@ -179,7 +183,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 				stdoutBufferMemorySpan.iov_len = amountOfBufferFilled - tempBuffer_head;
 				if (vmsplice(STDOUT_FILENO, &stdoutBufferMemorySpan, 1, SPLICE_F_GIFT) == -1) { REPORT_ERROR_AND_EXIT("vmsplice failed", EXIT_FAILURE); }
 
-				if (fwrite(currentStdoutBuffer + stdoutBufferMemorySpan.iov_len, sizeof(char), tempBuffer_head, stdout) < tempBuffer_head) {
+				if (!stdout_stream::write(currentStdoutBuffer + stdoutBufferMemorySpan.iov_len, tempBuffer_head)) {
 					REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 				}
 
@@ -217,7 +221,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 						REPORT_ERROR_AND_EXIT("vmsplice failed", EXIT_FAILURE);
 					}
 
-					if (fwrite(currentStdoutBuffer + stdoutBufferMemorySpan.iov_len, sizeof(char), tempBuffer_head, stdout) < tempBuffer_head) {
+					if (!stdout_stream::write(currentStdoutBuffer + stdoutBufferMemorySpan.iov_len, tempBuffer_head)) {
 						REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 					}
 
@@ -240,8 +244,9 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 				if (munmap((unsigned char*)stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 				amountOfBufferFilled = tempBuffer_head - tempBuffer_tail;
-				if (fwrite(tempBuffer + tempBuffer_tail, sizeof(char), amountOfBufferFilled, stdout) < amountOfBufferFilled) {
-					if (ferror(stdout)) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
+				// TODO: You're doing all this stuff with offsets, could you do it with pointers instead, we could rework stdout_stream to allow that.
+				if (!stdout_stream::write(tempBuffer + tempBuffer_tail, amountOfBufferFilled)) {
+					REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 				}
 
 				return DataTransferExitCode::SUCCESS;
@@ -316,8 +321,12 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 	size_t tempBuffer_tail = 0;
 
 	unsigned char inputBuffer[bytes_per_chunk];
-	if (fread(inputBuffer, sizeof(char), 1, stdin) == 0) {
-		if (ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
+	// TODO: Data type gets smaller once you remove/constrain chunk_indices stuff since your using new output system.
+	int16_t bytesRead = stdin_stream::read((char*)inputBuffer, 1);
+	switch (bytesRead) {
+	case -1:
+		REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
+	case 0:
 		return DataTransferExitCode::NO_INPUT_DATA;
 	}
 
@@ -327,10 +336,11 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 
 	while (true) {
 		while (amountOfBufferFilled <= stdoutPipeBufferSize - max_printf_write_length) {
-			unsigned char bytesRead = fread(inputBuffer, sizeof(char), bytes_per_chunk, stdin);
+			bytesRead = stdin_stream::read((char*)inputBuffer, bytes_per_chunk);
+			if (bytesRead == -1) {
+				REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
+			}
 			if (bytesRead < bytes_per_chunk) {
-				if (ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
-
 				for (unsigned char i = 0; i < bytesRead; i++) {
 					bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, single_printf_pattern.data, inputBuffer[i]);
 					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
@@ -342,7 +352,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 				stdoutBufferMemorySpan.iov_len = amountOfBufferFilled - tempBuffer_head;
 				if (vmsplice(STDOUT_FILENO, &stdoutBufferMemorySpan, 1, SPLICE_F_GIFT) == -1) { REPORT_ERROR_AND_EXIT("vmsplice failed", EXIT_FAILURE); }
 
-				if (fwrite(currentStdoutBuffer + stdoutBufferMemorySpan.iov_len, sizeof(char), tempBuffer_head, stdout) < tempBuffer_head) {
+				if (!stdout_stream::write(currentStdoutBuffer + stdoutBufferMemorySpan.iov_len, tempBuffer_head)) {
 					REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 				}
 
@@ -359,10 +369,11 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 
 		tempBuffer_tail = stdoutPipeBufferSize - amountOfBufferFilled;
 		for (tempBuffer_head = 0; tempBuffer_head < tempBuffer_tail;) {
-			unsigned char bytesRead = fread(inputBuffer, sizeof(char), bytes_per_chunk, stdin);
+			bytesRead = stdin_stream::read((char*)inputBuffer, bytes_per_chunk);
+			if (bytesRead == -1) {
+				REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
+			}
 			if (bytesRead < bytes_per_chunk) {
-				if (ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
-
 				for (unsigned char i = 0; i < bytesRead; i++) {
 					bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, single_printf_pattern.data, inputBuffer[i]);
 					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
@@ -380,7 +391,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 						REPORT_ERROR_AND_EXIT("vmsplice failed", EXIT_FAILURE);
 					}
 
-					if (fwrite(currentStdoutBuffer + stdoutBufferMemorySpan.iov_len, sizeof(char), tempBuffer_head, stdout) < tempBuffer_head) {
+					if (!stdout_stream::write(currentStdoutBuffer + stdoutBufferMemorySpan.iov_len, tempBuffer_head)) {
 						REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 					}
 
@@ -401,7 +412,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 				if (munmap(stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 				amountOfBufferFilled = tempBuffer_head - tempBuffer_tail;
-				if (fwrite(tempBuffer + tempBuffer_tail, sizeof(char), amountOfBufferFilled, stdout) < amountOfBufferFilled) {
+				if (!stdout_stream::write(tempBuffer + tempBuffer_tail, amountOfBufferFilled)) {
 					if (ferror(stdout)) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 				}
 
@@ -447,15 +458,18 @@ bool dataMode_read_write() noexcept {
 	// a) EOF
 	// b) an error occurred
 	// In this way, it is very different to the raw I/O (read and write).
-	if (std::fread(buffer, sizeof(char), 1, stdin) == 0) {
-		if (std::ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
+	int16_t bytesRead = stdin_stream::read((char*)buffer, 1);
+	switch (bytesRead) {
+	case -1:
+		REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
+	case 0:
 		return false;
 	}
 
 	if (meta_printf_no_terminator(initial_printf_pattern.data, buffer[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 
 	while (true) {
-		unsigned char bytesRead = std::fread(buffer, sizeof(char), bytes_per_chunk, stdin);
+		bytesRead = stdin_stream::read((char*)buffer, bytes_per_chunk);
 
 		if (bytesRead == bytes_per_chunk) {
 			if (meta_printf_no_terminator(printf_pattern.data, buffer[chunk_indices]...) < 0) {
@@ -464,7 +478,9 @@ bool dataMode_read_write() noexcept {
 			continue;
 		}
 
-		if (std::ferror(stdin)) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
+		if (bytesRead == -1) {
+			REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
+		}
 
 		for (unsigned char i = 0; i < bytesRead; i++) {
 			if (meta_printf_no_terminator(single_printf_pattern.data, buffer[i]) < 0) {
@@ -579,7 +595,7 @@ void output_C_CPP_array_data() noexcept {
 
 template <size_t output_size>
 void writeOutput(const char (&output)[output_size]) noexcept {
-	if (fwrite(output, sizeof(char), output_size - sizeof(char), stdout) == -1) {
+	if (!stdout_stream::write(output, output_size - sizeof(char))) {
 		REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 	}
 }
@@ -619,9 +635,6 @@ void outputSource(const char* language) noexcept {
 // Same with transition from seg 1 to seg 2.
 
 // TODO: Actually, consider making vm splice asynchronous as well. That virtual to physical mapping that it does is also kind of slow, we could smush that together with other timings if we do it in parallel with twice the buffer space to compensate for it.
-
-using stdin_stream = asyncio::stdin_stream<10>;
-using stdout_stream = asyncio::stdout_stream<10>;
 
 int main(int argc, const char* const * argv) noexcept {
 	// C++ standard I/O can suck it, it's super slow.

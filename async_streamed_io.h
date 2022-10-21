@@ -64,6 +64,7 @@ namespace asyncio {
 
 		static inline volatile bool finalize_reader_thread = false;
 
+		// TODO: Implement correct handling of EOF's.
 		static int8_t read_full_buffer(volatile char* buf, size_t count) noexcept {
 			while (true) {
 				if (finalize_reader_thread) { return 0; }
@@ -129,7 +130,7 @@ namespace asyncio {
 			return true;
 		}
 
-		static bool read(char* output_ptr, size_t output_size) noexcept {
+		static ssize_t read(char* output_ptr, size_t output_size) noexcept {
 			volatile char* read_end_ptr = buffer_user_read_head + output_size;
 			while (true) {
 				// NOTE: The volatile after the * is the only volatile that is relevant for a theoretical pure
