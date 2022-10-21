@@ -620,40 +620,51 @@ void outputSource(const char* language) noexcept {
 
 // TODO: Actually, consider making vm splice asynchronous as well. That virtual to physical mapping that it does is also kind of slow, we could smush that together with other timings if we do it in parallel with twice the buffer space to compensate for it.
 
+using stdin_stream = asyncio::stdin_stream<10>;
+using stdout_stream = asyncio::stdout_stream<10>;
+
 int main(int argc, const char* const * argv) noexcept {
-	// C++ standard I/O can suck it, it's super slow. We're using C standard I/O. Maybe I'll make a wrapper library for C++ eventually.
+	// C++ standard I/O can suck it, it's super slow.
+	// We were using C standard I/O, while that's super fast, it's not fast enough, so we're using a custom I/O system now.
+	stdin_stream::initialize();
+	stdout_stream::initialize();
 
-	//char stdout_buffer[BUFSIZ];
-	//setbuffer(stdout, stdout_buffer, BUFSIZ);
-	//char stdin_buffer[BUFSIZ];
-	//setbuffer(stdin, stdin_buffer, BUFSIZ);
+	// The following was part of the previous system with C standard I/O.
+		//char stdout_buffer[BUFSIZ];
+		//setbuffer(stdout, stdout_buffer, BUFSIZ);
+		//char stdin_buffer[BUFSIZ];
+		//setbuffer(stdin, stdin_buffer, BUFSIZ);
 
-	// NOTE: The above works, but it isn't a standard part of the standard library and isn't supported in
-	// Windows. We do it like this instead.
-	// NOTE: Isn't a problem since setbuffer is just an alias for setvbuf(fd, buf, buf ? _IOFBF : _IONBF, size)
-	// anyway.
-	char stdin_buffer[std::numeric_limits<uint16_t>::max()];
-	std::setvbuf(stdin, stdin_buffer, _IOFBF, sizeof(stdin_buffer));
-	char stdout_buffer[std::numeric_limits<uint16_t>::max()];
-	std::setvbuf(stdout, stdout_buffer, _IOFBF, sizeof(stdout_buffer));
+		// NOTE: The above works, but it isn't a standard part of the standard library and isn't supported in
+		// Windows. We do it like this instead.
+		// NOTE: Isn't a problem since setbuffer is just an alias for setvbuf(fd, buf, buf ? _IOFBF : _IONBF, size)
+		// anyway.
+		//char stdin_buffer[std::numeric_limits<uint16_t>::max()];
+		//std::setvbuf(stdin, stdin_buffer, _IOFBF, sizeof(stdin_buffer));
+		//char stdout_buffer[std::numeric_limits<uint16_t>::max()];
+		//std::setvbuf(stdout, stdout_buffer, _IOFBF, sizeof(stdout_buffer));
 
-	// NOTE: One would think that BUFSIZ is the default buffer size for C buffered I/O.
-	// Apparently it isn't, because the above yields performance improvements when explicitly setting to BUFSIZ.
-	// NOTE: Right now, we are however setting it 65536, because that's a better number.
-	// There are no downsides to making the number larger for this use-case, and 65536 works a lot better because
-	// most pipes are that big.
+		// NOTE: One would think that BUFSIZ is the default buffer size for C buffered I/O.
+		// Apparently it isn't, because the above yields performance improvements when explicitly setting to BUFSIZ.
+		// NOTE: Right now, we are however setting it 65536, because that's a better number.
+		// There are no downsides to making the number larger for this use-case, and 65536 works a lot better because
+		// most pipes are that big.
 
 	int normalArgIndex = manageArgs(argc, argv);
 	outputSource(argv[normalArgIndex]);
 
-	// NOTE: We have to explicitly close stdin and stdout because we can't let them automatically close
-	// after stdin_buffer and stdout_buffer have already been freed. fclose will try to flush remaining
-	// data and that's very iffy if the buffers have already been released. Potential seg fault and all that.
-	// That's why we explicitly close them here.
-	// The standard says that we don't have to worry about other code closing them after we've already closed them
-	// here, which would be bad. I assume whatever code comes after us checks if they are open before trying to close
-	// them.
-	// TODO: Look up how buffered I/O is implemented in C.
-	fclose(stdout);
-	fclose(stdin);
+	// The following was part of the previous system with C standard I/O.
+		// NOTE: We have to explicitly close stdin and stdout because we can't let them automatically close
+		// after stdin_buffer and stdout_buffer have already been freed. fclose will try to flush remaining
+		// data and that's very iffy if the buffers have already been released. Potential seg fault and all that.
+		// That's why we explicitly close them here.
+		// The standard says that we don't have to worry about other code closing them after we've already closed them
+		// here, which would be bad. I assume whatever code comes after us checks if they are open before trying to close
+		// them.
+		// TODO: Look up how buffered I/O is implemented in C.
+		//fclose(stdout);
+		//fclose(stdin);
+
+	stdin_stream::dispose();
+	stdout_stream::dispose();
 }

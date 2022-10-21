@@ -64,11 +64,11 @@ namespace asyncio {
 
 		static inline volatile bool finalize_reader_thread = false;
 
-		static int8_t read_full_buffer(char* buf, size_t count) noexcept {
+		static int8_t read_full_buffer(volatile char* buf, size_t count) noexcept {
 			while (true) {
 				if (finalize_reader_thread) { return 0; }
 
-				ssize_t bytes_read = ::read(STDIN_FILENO, buf, count);
+				ssize_t bytes_read = ::read(STDIN_FILENO, (char*)buf, count);
 				bool nothing_to_read = (errno == EAGAIN || errno == EWOULDBLOCK);
 				if (bytes_read == -1 && !nothing_to_read) { return -1; }
 				bytes_read += nothing_to_read;
@@ -124,7 +124,7 @@ namespace asyncio {
 			// so I presume all "hot" variables are written to memory before calling the syscall.
 			// This might seem a slight bit inefficient and dirty, but it's the only clean way of handling this.
 			// Any other system would induce a lot of complexity and confusion I presume.
-			reader_thread = std::thread(reader_thread_code);
+			reader_thread = std::thread((void(*)())reader_thread_code);
 
 			return true;
 		}
@@ -195,7 +195,7 @@ namespace asyncio {
 
 				if (finalize_flusher_thread) { return; }
 
-				if (::write(STDOUT_FILENO, buffer, flush_size) == -1) {
+				if (::write(STDOUT_FILENO, (char*)buffer, flush_size) == -1) {
 					finalize_flusher_thread = true;
 					buffer_flush_pending = false;
 					return;
@@ -207,7 +207,7 @@ namespace asyncio {
 
 				if (finalize_flusher_thread) { return; }
 
-				if (::write(STDOUT_FILENO, buffer + buffer_size, flush_size) == -1) {
+				if (::write(STDOUT_FILENO, (char*)(buffer + buffer_size), flush_size) == -1) {
 					finalize_flusher_thread = true;
 					buffer_flush_pending = false;
 					return;
@@ -217,8 +217,9 @@ namespace asyncio {
 			}
 		}
 
+	public:
 		static void initialize() noexcept {
-			flusher_thread = std::thread(flusher_thread_code);
+			flusher_thread = std::thread((void(*)())flusher_thread_code);
 		}
 
 		static bool write(const char* input_ptr, size_t input_size) noexcept {
