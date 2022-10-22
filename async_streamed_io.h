@@ -6,6 +6,8 @@
 
 #include <thread>
 
+#include <iostream>
+
 namespace asyncio {
 
 	enum class buffer_position_t : bool {
@@ -55,6 +57,7 @@ namespace asyncio {
 
 		static constexpr volatile char* buffer_half_end_ptr = buffer + buffer_size;
 
+		static inline volatile char* buffer_stream_write_head = nullptr;
 		static inline volatile char* buffer_user_read_head = 0;
 
 		static inline std::thread reader_thread;
@@ -65,45 +68,58 @@ namespace asyncio {
 		static inline volatile bool finalize_reader_thread = false;
 
 		// TODO: Implement correct handling of EOF's.
-		static int8_t read_full_buffer(volatile char* buf, size_t count) noexcept {
+		static ssize_t read_full_buffer(volatile char* buf, size_t count) noexcept {
+			volatile char* original_buf_ptr = buf;
+			std::cerr << "got here\n";
 			while (true) {
-				if (finalize_reader_thread) { return 0; }
+				if (finalize_reader_thread) { return -2; }
 
 				ssize_t bytes_read = ::read(STDIN_FILENO, (char*)buf, count);
 				bool nothing_to_read = (errno == EAGAIN || errno == EWOULDBLOCK);
-				if (bytes_read == -1 && !nothing_to_read) { return -1; }
+				if (bytes_read == -1 && !nothing_to_read) { return -3; }
+				if (bytes_read == 0) { return buf - original_buf_ptr; }
 				bytes_read += nothing_to_read;
 				// TODO: Test if the above line is faster than an if statement, look at assembly, stuff like that.
 				// It turns -1 to 0 when EAGAIN or EWOULDBLOCK is there. Consider that stdin isn't always a regular file.
 
 				count -= bytes_read;
-				if (count == 0) { return 1; }
+				if (count == 0) { return -1; }
 				buf += bytes_read;
 			}
 		}
 
 		static void reader_thread_code() noexcept {
 			while (true) {
-				while (empty_buffer == buffer_position_t::right) { }
+				while (empty_buffer == buffer_position_t::left) { }
 
-				int8_t read_result = read_full_buffer(buffer, buffer_size);
+				ssize_t read_result = read_full_buffer(buffer + buffer_size, buffer_size);
 				switch (read_result) {
-				case -1:
+				case -3:
 					finalize_reader_thread = true;
 					buffer_read_pending = false;
-				case 0: return;
+				case -2: return;
+				case -1: break;
+				default:
+					 buffer_stream_write_head = buffer + buffer_size + read_result;
+					 buffer_read_pending = false;
+					 return;
 				}
 
 				buffer_read_pending = false;
 
-				while (empty_buffer == buffer_position_t::left) { }
+				while (empty_buffer == buffer_position_t::right) { }
 
-				read_result = read_full_buffer(buffer + buffer_size, buffer_size);
+				read_result = read_full_buffer(buffer, buffer_size);
 				switch (read_result) {
-				case -1:
+				case -3:
 					finalize_reader_thread = true;
 					buffer_read_pending = false;
-				case 0: return;
+				case -2: return;
+				case -1: break;
+				default:
+					 buffer_stream_write_head = buffer + read_result;
+					 buffer_read_pending = false;
+					 return;
 				}
 
 				buffer_read_pending = false;
@@ -115,6 +131,18 @@ namespace asyncio {
 			int stdin_fd_flags = fcntl(STDIN_FILENO, F_GETFL);
 			if (stdin_fd_flags == -1) { return false; }
 			if (fcntl(STDIN_FILENO, F_SETFL, stdin_fd_flags | O_NONBLOCK) == -1) { return false; }
+
+			ssize_t read_result = read_full_buffer(buffer, buffer_size);
+			switch (read_result) {
+			case -3: return false;
+			// case -2: while (true) { }	<-- shouldn't ever happen
+			case -1: break;
+			default:
+				 std::cerr << "hit other thing\n";
+				 std::cerr << (const char*)buffer << '\n';
+				 buffer_stream_write_head = buffer + read_result;
+				 return true;
+			}
 
 			// INTERESTING NOTE: std::thread cannot be made volatile, but it doesn't have to be.
 			// In C++, memory is "committed" before calling functions, because those functions could theoretically
@@ -130,6 +158,15 @@ namespace asyncio {
 			return true;
 		}
 
+		template <typename T>
+		static const T& minimum_value(const T& a, const T& b) noexcept {
+			return a < b ? a : b;
+			// TODO: Or like this?:
+			//return a + (b - a) * (a < b);
+		}
+
+		// NOTE: Behaviour is super duper undefined if you call this after encountering EOF.
+		// BTW: EOF is denoted by returning less than output_size. After that, no more calling this function!
 		static ssize_t read(char* output_ptr, size_t output_size) noexcept {
 			volatile char* read_end_ptr = buffer_user_read_head + output_size;
 			while (true) {
@@ -140,6 +177,13 @@ namespace asyncio {
 				// The only volatile necessary here is the one before the *, since the pointer itself is only accessed
 				// from one thread.
 				volatile char* const current_buffer_end_ptr = buffer_half_end_ptr + (bool)empty_buffer * buffer_size;
+
+				if (buffer_stream_write_head != nullptr) {
+					std::cerr << "hit thing\n";
+					buffer_user_read_head = (char*)(std::copy(buffer_user_read_head, minimum_value(read_end_ptr, buffer_stream_write_head), output_ptr) - output_ptr);
+					return (ssize_t)buffer_user_read_head;
+				}
+
 				if (read_end_ptr < current_buffer_end_ptr) {
 					std::copy(buffer_user_read_head, read_end_ptr, output_ptr);
 					buffer_user_read_head = read_end_ptr;
@@ -167,6 +211,7 @@ namespace asyncio {
 		}
 
 		static void dispose() noexcept {
+			std::cerr << "hi there got to thing\n";
 			finalize_reader_thread = true;
 			empty_buffer = !empty_buffer;
 			reader_thread.join();
@@ -283,6 +328,7 @@ namespace asyncio {
 		}
 
 		static void dispose() noexcept {
+			std::cerr << "got to flusher disposal\n";
 			flush();
 			finalize_flusher_thread = true;
 			full_buffer = !full_buffer;

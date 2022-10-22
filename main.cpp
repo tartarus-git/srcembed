@@ -13,8 +13,8 @@
 #include "async_streamed_io.h"
 
 // These (technically just stdout_stream) need to be located before meta_printf.h include.
-using stdin_stream = asyncio::stdin_stream<10>;
-using stdout_stream = asyncio::stdout_stream<10>;
+using stdin_stream = asyncio::stdin_stream<100>;
+using stdout_stream = asyncio::stdout_stream<100>;
 
 #include "meta_printf.h"	// for compile-time printf
 
@@ -639,7 +639,9 @@ void outputSource(const char* language) noexcept {
 int main(int argc, const char* const * argv) noexcept {
 	// C++ standard I/O can suck it, it's super slow.
 	// We were using C standard I/O, while that's super fast, it's not fast enough, so we're using a custom I/O system now.
-	stdin_stream::initialize();
+	if (!stdin_stream::initialize()) {
+		REPORT_ERROR_AND_EXIT("failed to initialize stdin", EXIT_FAILURE);
+	}
 	stdout_stream::initialize();
 
 	// The following was part of the previous system with C standard I/O.
