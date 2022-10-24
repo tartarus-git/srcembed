@@ -58,7 +58,7 @@ namespace asyncio {
 		static constexpr volatile char* buffer_half_end_ptr = buffer + buffer_size;
 
 		static inline volatile char* buffer_stream_write_head = nullptr;
-		static inline volatile char* buffer_user_read_head = 0;
+		static inline volatile char* buffer_user_read_head = buffer;
 
 		static inline std::thread reader_thread;
 
@@ -67,7 +67,6 @@ namespace asyncio {
 
 		static inline volatile bool finalize_reader_thread = false;
 
-		// TODO: Implement correct handling of EOF's.
 		static ssize_t read_full_buffer(volatile char* buf, size_t count) noexcept {
 			volatile char* original_buf_ptr = buf;
 			std::cerr << "got here\n";
@@ -130,6 +129,7 @@ namespace asyncio {
 		static bool initialize() noexcept {
 			int stdin_fd_flags = fcntl(STDIN_FILENO, F_GETFL);
 			if (stdin_fd_flags == -1) { return false; }
+			// TODO: Idk this doesn't seem to work for pipes on stdin, idk why, research and test.
 			if (fcntl(STDIN_FILENO, F_SETFL, stdin_fd_flags | O_NONBLOCK) == -1) { return false; }
 
 			ssize_t read_result = read_full_buffer(buffer, buffer_size);
@@ -141,6 +141,7 @@ namespace asyncio {
 				 std::cerr << "hit other thing\n";
 				 std::cerr << (const char*)buffer << '\n';
 				 buffer_stream_write_head = buffer + read_result;
+				 std::cerr << "set write head\n";
 				 return true;
 			}
 
@@ -167,6 +168,7 @@ namespace asyncio {
 
 		// NOTE: Behaviour is super duper undefined if you call this after encountering EOF.
 		// BTW: EOF is denoted by returning less than output_size. After that, no more calling this function!
+		// TODO: Actually, above note isn't true anymore, check to make sure though.
 		static ssize_t read(char* output_ptr, size_t output_size) noexcept {
 			volatile char* read_end_ptr = buffer_user_read_head + output_size;
 			while (true) {
@@ -180,14 +182,17 @@ namespace asyncio {
 
 				if (buffer_stream_write_head != nullptr) {
 					std::cerr << "hit thing\n";
-					buffer_user_read_head = (char*)(std::copy(buffer_user_read_head, minimum_value(read_end_ptr, buffer_stream_write_head), output_ptr) - output_ptr);
-					return (ssize_t)buffer_user_read_head;
+					read_end_ptr = minimum_value(read_end_ptr, buffer_stream_write_head);
+					size_t amount_read = std::copy(buffer_user_read_head, read_end_ptr, output_ptr) - output_ptr;
+					buffer_user_read_head = read_end_ptr;
+					return amount_read;
 				}
+				// TODO: Read up on exception overhead again, and then try to disable exceptions on this build because there is overhead on x86 even when no exception gets triggered.
 
 				if (read_end_ptr < current_buffer_end_ptr) {
 					std::copy(buffer_user_read_head, read_end_ptr, output_ptr);
 					buffer_user_read_head = read_end_ptr;
-					return true;
+					return output_size;
 				}
 	
 				std::copy(buffer_user_read_head, current_buffer_end_ptr, output_ptr);
@@ -196,7 +201,7 @@ namespace asyncio {
 				read_end_ptr -= full_space;
 	
 				while (buffer_read_pending) { }
-				if (finalize_reader_thread) { return false; }
+				if (finalize_reader_thread) { return -1; }
 
 				// NOTE: We do this here
 				// so that an error doesn't cause buffer bytes to be eaten (it would do that if this were above the if-stm)
@@ -212,9 +217,12 @@ namespace asyncio {
 
 		static void dispose() noexcept {
 			std::cerr << "hi there got to thing\n";
-			finalize_reader_thread = true;
-			empty_buffer = !empty_buffer;
-			reader_thread.join();
+			if (reader_thread.joinable()) {
+				finalize_reader_thread = true;
+				empty_buffer = !empty_buffer;
+				reader_thread.join();
+			}
+			std::cerr << "joined thread 1\n";
 		}
 	};
 
@@ -224,7 +232,7 @@ namespace asyncio {
 
 		static constexpr volatile char* buffer_half_end_ptr = buffer + buffer_size;
 
-		static inline volatile char* buffer_user_write_head = 0;
+		static inline volatile char* buffer_user_write_head = buffer;
 
 		static inline std::thread flusher_thread;
 
@@ -269,6 +277,7 @@ namespace asyncio {
 		}
 
 		static bool write(const char* input_ptr, size_t input_size) noexcept {
+			std::cerr << "hit write call\n";
 			while (true) {
 				// NOTE: Converting the full_buffer bool to another integer type is totally fine, since converted bools
 				// always equal 0 or 1, all other non-zero values get transformed to 1 on conversion.
@@ -329,7 +338,7 @@ namespace asyncio {
 
 		static void dispose() noexcept {
 			std::cerr << "got to flusher disposal\n";
-			flush();
+			flush();		// TODO: Report error here.
 			finalize_flusher_thread = true;
 			full_buffer = !full_buffer;
 			flusher_thread.join();

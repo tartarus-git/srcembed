@@ -10,6 +10,8 @@
 #include <cstdio>		// for buffered I/O
 #include <cstring>		// for std::strcmp()
 
+#include <iostream>
+
 #include "async_streamed_io.h"
 
 // These (technically just stdout_stream) need to be located before meta_printf.h include.
@@ -44,10 +46,21 @@ const char helpText[] = "usage: srcembed <--help> || ([--varname <variable name>
 				"\tc++\n" \
 				"\tc\n";
 
+[[noreturn]] void halt_program_no_cleanup(int exit_code) noexcept {
+	// TODO: See about doing something with the hlt instruction and such. Look at abort.c source code.
+	std::_Exit(exit_code);
+}
+
 template <size_t message_size>
 void writeErrorAndExit(const char (&message)[message_size], int exitCode) noexcept {
 	write(STDERR_FILENO, message, message_size - 1);
-	std::exit(exitCode);
+	halt_program_no_cleanup(exitCode);
+	// NOTE: No cleanup is necessary because:
+	//	1. Why should we waste our time cleaning things up, pretty pointless.
+	//	2. The real reason is so that the thread destructors don't get called, since those
+	//		call std::terminate on the program if the threads aren't joined, which they probably aren't.
+	//	(std::terminate wouldn't necessarily be bad, but it prints an error message which is suboptimal)
+	//		--> We could add a termination handler and override the exit message, but why do that when the better option is this?
 }
 
 #define REPORT_ERROR_AND_EXIT(message, exitCode) writeErrorAndExit("ERROR: " message "\n", exitCode)
@@ -458,7 +471,9 @@ bool dataMode_read_write() noexcept {
 	// a) EOF
 	// b) an error occurred
 	// In this way, it is very different to the raw I/O (read and write).
+	std::cerr << "got to before reading\n";
 	int16_t bytesRead = stdin_stream::read((char*)buffer, 1);
+	std::cerr << "got to after reading\n";
 	switch (bytesRead) {
 	case -1:
 		REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
@@ -483,11 +498,18 @@ bool dataMode_read_write() noexcept {
 		}
 
 		for (unsigned char i = 0; i < bytesRead; i++) {
+			std::cerr << "iteration: " << (int)i << '\n';
 			if (meta_printf_no_terminator(single_printf_pattern.data, buffer[i]) < 0) {
 				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}
 		}
+
 		return true;
+
+		// NOTE: The NUL character at the end of output when using terminal is just what happens, I think that's expected behaviour.
+		// TODO: Research and think about how exactly the terminal works. When does it belong to bash, when does it belong to me.
+		// Is bash responsible for Ctrl + D, how does it avoid getting triggered by it if it isn't responsible while it's waiting for
+		// my program, something about process groups with terminals and stuff, look it all up.
 	}
 }
 
@@ -600,6 +622,11 @@ void writeOutput(const char (&output)[output_size]) noexcept {
 	}
 }
 
+void initialize_streams() noexcept {
+	if (!stdin_stream::initialize()) { REPORT_ERROR_AND_EXIT("failed to initialize stdin stream", EXIT_FAILURE); }
+	stdout_stream::initialize();
+}
+
 void outputSource(const char* language) noexcept {
 	if (std::strcmp(language, "c++") == 0) {
 		if (std::printf("const char %s[] { ", flags::varname) < 0) {
@@ -608,6 +635,7 @@ void outputSource(const char* language) noexcept {
 		if (fflush(stdout) == EOF) {
 			REPORT_ERROR_AND_EXIT("failed to flush stdout", EXIT_FAILURE);
 		}
+		initialize_streams();
 		output_C_CPP_array_data();
 		writeOutput(" };\n");
 		return;
@@ -619,6 +647,7 @@ void outputSource(const char* language) noexcept {
 		if (fflush(stdout) == EOF) {
 			REPORT_ERROR_AND_EXIT("failed to flush stdout", EXIT_FAILURE);
 		}
+		initialize_streams();
 		output_C_CPP_array_data();
 		writeOutput(" };\n");
 		return;
@@ -639,10 +668,6 @@ void outputSource(const char* language) noexcept {
 int main(int argc, const char* const * argv) noexcept {
 	// C++ standard I/O can suck it, it's super slow.
 	// We were using C standard I/O, while that's super fast, it's not fast enough, so we're using a custom I/O system now.
-	if (!stdin_stream::initialize()) {
-		REPORT_ERROR_AND_EXIT("failed to initialize stdin", EXIT_FAILURE);
-	}
-	stdout_stream::initialize();
 
 	// The following was part of the previous system with C standard I/O.
 		//char stdout_buffer[BUFSIZ];
