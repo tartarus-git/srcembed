@@ -197,7 +197,9 @@ namespace asyncio {
 		// TODO: Actually, above note isn't true anymore, check to make sure though.
 		static ssize_t read(char* output_ptr, size_t output_size) noexcept {
 			volatile char* read_end_ptr = buffer_user_read_head + output_size;
+			size_t todo_change_later_orig_output_size = output_size;
 			while (true) {
+				std::cerr << "buwh: " << buffer_user_read_head - buffer << '\n';
 				// NOTE: The volatile after the * is the only volatile that is relevant for a theoretical pure
 				// dereference, without an attached read or write to the variable. Idk if that exists in
 				// C++ because every dereference I've ever seen is attached to a read or write, which then also
@@ -219,7 +221,7 @@ namespace asyncio {
 				if (read_end_ptr < current_buffer_end_ptr) {
 					std::copy(buffer_user_read_head, read_end_ptr, output_ptr);
 					buffer_user_read_head = read_end_ptr;
-					return output_size;
+					return todo_change_later_orig_output_size;
 				}
 	
 				std::copy(buffer_user_read_head, current_buffer_end_ptr, output_ptr);
