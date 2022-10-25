@@ -74,8 +74,14 @@ namespace asyncio {
 				if (finalize_reader_thread) { return -2; }
 
 				ssize_t bytes_read = ::read(STDIN_FILENO, (char*)buf, count);
-				bool nothing_to_read = (errno == EAGAIN || errno == EWOULDBLOCK);
-				if (bytes_read == -1 && !nothing_to_read) { return -3; }
+				bool nothing_to_read = false;
+				if (bytes_read == -1 && !(nothing_to_read = (errno == EAGAIN || errno == EWOULDBLOCK))) {
+					std::cerr << "got hard error on reading full buffer\n";
+					std::cerr << errno << '\n';
+					std::cerr << buf - original_buf_ptr << '\n';
+					std::cerr << count << '\n';
+					return -3;
+				}
 				if (bytes_read == 0) { return buf - original_buf_ptr; }
 				bytes_read += nothing_to_read;
 				// TODO: Test if the above line is faster than an if statement, look at assembly, stuff like that.
@@ -129,8 +135,9 @@ namespace asyncio {
 		static bool initialize() noexcept {
 			int stdin_fd_flags = fcntl(STDIN_FILENO, F_GETFL);
 			if (stdin_fd_flags == -1) { return false; }
-			// TODO: Idk this doesn't seem to work for pipes on stdin, idk why, research and test.
+			std::cerr << "starting fcntl\n";
 			if (fcntl(STDIN_FILENO, F_SETFL, stdin_fd_flags | O_NONBLOCK) == -1) { return false; }
+			std::cerr << "finished fcntl\n";
 
 			ssize_t read_result = read_full_buffer(buffer, buffer_size);
 			switch (read_result) {
@@ -144,6 +151,8 @@ namespace asyncio {
 				 std::cerr << "set write head\n";
 				 return true;
 			}
+
+			std::cerr << "starting stdin thread\n";
 
 			// INTERESTING NOTE: std::thread cannot be made volatile, but it doesn't have to be.
 			// In C++, memory is "committed" before calling functions, because those functions could theoretically
