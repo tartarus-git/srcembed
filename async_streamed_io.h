@@ -82,13 +82,16 @@ namespace asyncio {
 					std::cerr << count << '\n';
 					return -3;
 				}
+				std::cerr << bytes_read << '\n';
 				if (bytes_read == 0) { return buf - original_buf_ptr; }
 				bytes_read += nothing_to_read;
 				// TODO: Test if the above line is faster than an if statement, look at assembly, stuff like that.
 				// It turns -1 to 0 when EAGAIN or EWOULDBLOCK is there. Consider that stdin isn't always a regular file.
 
 				count -= bytes_read;
-				if (count == 0) { return -1; }
+				if (count == 0) {
+					std::cerr << "hit full exit scenario\n";
+					return -1; }
 				buf += bytes_read;
 			}
 		}
@@ -98,13 +101,20 @@ namespace asyncio {
 				while (empty_buffer == buffer_position_t::left) { }
 
 				ssize_t read_result = read_full_buffer(buffer + buffer_size, buffer_size);
+				std::cerr << "got past read_full_buffer\n";
 				switch (read_result) {
 				case -3:
+					std::cerr << "read_full_buffer got error returned\n";
 					finalize_reader_thread = true;
 					buffer_read_pending = false;
-				case -2: return;
-				case -1: break;
+				case -2:
+					std::cerr << "wanted to exit\n";
+					return;
+				case -1:
+					 std::cerr << "full return\n";
+					 break;
 				default:
+					 std::cerr << "right end state hit\n";
 					 buffer_stream_write_head = buffer + buffer_size + read_result;
 					 buffer_read_pending = false;
 					 return;
@@ -115,13 +125,20 @@ namespace asyncio {
 				while (empty_buffer == buffer_position_t::right) { }
 
 				read_result = read_full_buffer(buffer, buffer_size);
+				std::cerr << "got past read_full_buffer\n";
 				switch (read_result) {
 				case -3:
+					std::cerr << "read_full_buffer got error returned\n";
 					finalize_reader_thread = true;
 					buffer_read_pending = false;
-				case -2: return;
-				case -1: break;
+				case -2:
+					std::cerr << "wanted to exit\n";
+					return;
+				case -1:
+					 std::cerr << "full return\n";
+					 break;
 				default:
+					 std::cerr << "left end state hit\n";
 					 buffer_stream_write_head = buffer + read_result;
 					 buffer_read_pending = false;
 					 return;
@@ -188,6 +205,7 @@ namespace asyncio {
 				// The only volatile necessary here is the one before the *, since the pointer itself is only accessed
 				// from one thread.
 				volatile char* const current_buffer_end_ptr = buffer_half_end_ptr + (bool)empty_buffer * buffer_size;
+				//std::cerr << "looped the thing\n";
 
 				if (buffer_stream_write_head != nullptr) {
 					std::cerr << "hit thing\n";
@@ -207,18 +225,15 @@ namespace asyncio {
 				std::copy(buffer_user_read_head, current_buffer_end_ptr, output_ptr);
 				const size_t full_space = current_buffer_end_ptr - buffer_user_read_head;
 				output_ptr += full_space;
-				read_end_ptr -= full_space;
+				output_size -= full_space;
 	
 				while (buffer_read_pending) { }
 				if (finalize_reader_thread) { return -1; }
 
-				if (buffer_stream_write_head != nullptr) {
-					// TODO: Find some way to efficiently handle getting the last bits of data here.
-				}
-
 				// NOTE: We do this here
 				// so that an error doesn't cause buffer bytes to be eaten (it would do that if this were above the if-stm)
 				buffer_user_read_head = current_buffer_end_ptr - (bool)empty_buffer * (buffer_size * 2);
+				read_end_ptr = buffer_user_read_head + output_size;
 				// TODO: See if this would be faster with an if-statement, considering that we call read with small chunks
 				// instead of big ones.
 				// TODO: Put it down like you did the one below, looks better and is more understandable.
