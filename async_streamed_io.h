@@ -57,7 +57,9 @@ namespace asyncio {
 
 		static constexpr volatile char* buffer_half_end_ptr = buffer + buffer_size;
 
+		// TODO: Do these both have to be nullptr, probs not.
 		static inline volatile char* buffer_stream_write_head = nullptr;
+		static inline volatile char* buffer_stream_write_head_copy = nullptr;
 		static inline volatile char* buffer_user_read_head = buffer;
 
 		static inline std::thread reader_thread;
@@ -164,7 +166,7 @@ namespace asyncio {
 			default:
 				 std::cerr << "hit other thing\n";
 				 std::cerr << (const char*)buffer << '\n';
-				 buffer_stream_write_head = buffer + read_result;
+				 buffer_stream_write_head_copy = buffer + read_result;
 				 std::cerr << "set write head\n";
 				 return true;
 			}
@@ -209,9 +211,9 @@ namespace asyncio {
 				volatile char* const current_buffer_end_ptr = buffer_half_end_ptr + (bool)empty_buffer * buffer_size;
 				//std::cerr << "looped the thing\n";
 
-				if (buffer_stream_write_head != nullptr) {
+				if (buffer_stream_write_head_copy != nullptr) {
 					std::cerr << "hit thing\n";
-					read_end_ptr = minimum_value(read_end_ptr, buffer_stream_write_head);
+					read_end_ptr = minimum_value(read_end_ptr, buffer_stream_write_head_copy);
 					size_t amount_read = std::copy(buffer_user_read_head, read_end_ptr, output_ptr) - output_ptr;
 					buffer_user_read_head = read_end_ptr;
 					return amount_read;
@@ -231,6 +233,8 @@ namespace asyncio {
 	
 				while (buffer_read_pending) { }
 				if (finalize_reader_thread) { return -1; }
+
+				buffer_stream_write_head_copy = buffer_stream_write_head;
 
 				// NOTE: We do this here
 				// so that an error doesn't cause buffer bytes to be eaten (it would do that if this were above the if-stm)
