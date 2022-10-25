@@ -212,6 +212,10 @@ namespace asyncio {
 				while (buffer_read_pending) { }
 				if (finalize_reader_thread) { return -1; }
 
+				if (buffer_stream_write_head != nullptr) {
+					// TODO: Find some way to efficiently handle getting the last bits of data here.
+				}
+
 				// NOTE: We do this here
 				// so that an error doesn't cause buffer bytes to be eaten (it would do that if this were above the if-stm)
 				buffer_user_read_head = current_buffer_end_ptr - (bool)empty_buffer * (buffer_size * 2);
@@ -286,7 +290,6 @@ namespace asyncio {
 		}
 
 		static bool write(const char* input_ptr, size_t input_size) noexcept {
-			std::cerr << "hit write call\n";
 			while (true) {
 				// NOTE: Converting the full_buffer bool to another integer type is totally fine, since converted bools
 				// always equal 0 or 1, all other non-zero values get transformed to 1 on conversion.

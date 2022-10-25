@@ -15,8 +15,8 @@
 #include "async_streamed_io.h"
 
 // These (technically just stdout_stream) need to be located before meta_printf.h include.
-using stdin_stream = asyncio::stdin_stream<100>;
-using stdout_stream = asyncio::stdout_stream<100>;
+using stdin_stream = asyncio::stdin_stream<65536>;
+using stdout_stream = asyncio::stdout_stream<65536>;
 
 #include "meta_printf.h"	// for compile-time printf
 
