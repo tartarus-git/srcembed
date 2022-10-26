@@ -200,6 +200,7 @@ namespace asyncio {
 		static ssize_t read(char* output_ptr, size_t output_size) noexcept {
 			volatile char* read_end_ptr = buffer_user_read_head + output_size;
 			size_t todo_change_later_orig_output_size = output_size;
+			char* todo_change_later_orig_output_ptr = output_ptr;
 			while (true) {
 				std::cerr << "buwh: " << buffer_user_read_head - buffer << '\n';
 				// NOTE: The volatile after the * is the only volatile that is relevant for a theoretical pure
@@ -214,7 +215,7 @@ namespace asyncio {
 				if (buffer_stream_write_head_copy != nullptr) {
 					std::cerr << "hit thing\n";
 					read_end_ptr = minimum_value(read_end_ptr, buffer_stream_write_head_copy);
-					size_t amount_read = std::copy(buffer_user_read_head, read_end_ptr, output_ptr) - output_ptr;
+					size_t amount_read = std::copy(buffer_user_read_head, read_end_ptr, output_ptr) - todo_change_later_orig_output_ptr;
 					buffer_user_read_head = read_end_ptr;
 					return amount_read;
 				}
