@@ -505,11 +505,6 @@ bool dataMode_read_write() noexcept {
 		}
 
 		return true;
-
-		// NOTE: The NUL character at the end of output when using terminal is just what happens, I think that's expected behaviour.
-		// TODO: Research and think about how exactly the terminal works. When does it belong to bash, when does it belong to me.
-		// Is bash responsible for Ctrl + D, how does it avoid getting triggered by it if it isn't responsible while it's waiting for
-		// my program, something about process groups with terminals and stuff, look it all up.
 	}
 }
 
