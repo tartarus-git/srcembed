@@ -99,6 +99,8 @@ namespace meta {
 		return result;
 	}
 
+	void report_consteval_error(const char* message);
+
 	namespace printf {
 
 		// NOTE: We stopped using iterators because they require use of fputc with every character.
@@ -268,7 +270,7 @@ namespace meta {
 
 				switch (last_op = table_entry.op_type) {
 
-				case op_type_t::INVALID: throw "meta_printf invalid: blueprint invalid";
+				case op_type_t::INVALID: report_consteval_error("meta_printf invalid: blueprint invalid");
 
 				case op_type_t::NOOP:
 					state = table_entry.next_state;
@@ -290,7 +292,7 @@ namespace meta {
 
 				}
 			}
-			if (blueprint_parse_table[state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf invalid: blueprint invalid"; }
+			if (blueprint_parse_table[state * 129 + 128].op_type == op_type_t::INVALID) { report_consteval_error("meta_printf invalid: blueprint invalid"); }
 
 			return result;
 		}
@@ -352,7 +354,7 @@ namespace meta {
 
 				// NOTE: throw is illegal in a consteval function, but only if the interpreter actually hits it.
 				// This is perfect for us, since we want to trigger an error only if control flow gets here.
-				case op_type_t::INVALID: throw "meta_printf invalid: blueprint invalid";
+				//case op_type_t::INVALID: throw "meta_printf invalid: blueprint invalid";
 				// NOTE: In a constexpr function, throw will force evaluation at runtime, since it's illegal at compile-time.
 				// NOTE: But constexpr functions must have at least one set of args that allows compile-time execution,
 				// so it fails if throw is always hit.
@@ -360,6 +362,32 @@ namespace meta {
 				// There are situations where it is practically unsolvable. In that case I assume the compiler doesn't let
 				// you finish compilation even if there theoretically is a route where compile-time evaluation is possible.
 				// TODO: Research this and see what actually happens.
+
+				// NOTE: The above method was used when exceptions were enabled. With -fno-exceptions, the compiler doesn't let us
+				// use the throw keyword. Calling a function with a declaration but not an implementation is another good way to do this though.
+				// FUN FACT: report_consteval_error is a normal function, it isn't consteval or constexpr, although it could be if I wanted it to be.
+				// It still works great with normal functions, which seems weird. I guess it simply has to do with the order in which constraints are
+				// enforced in the compiler (this order is standardized (at least when it comes to this) AFAIK, so don't worry).
+				// I imagine syntax is checked first, then non-dependent type checking is done, then instantiation is done, then dependant
+				// type checking is done, then the AST that resulted from instantiation is interpreted. While it is interpreted, any function calls
+				// that the interpreter hits are checked to make sure they are all compile-time and that the implementations exist.
+				// One could certainly do this function checking before interpretation, thereby ruining our hack, but C++ doesn't do this.
+				// PROBABLE EXPLANATION:
+				// 	why they check the implementation only when the function actually gets used makes sense:
+				// 		- you often want to use function types in template constructs without actually calling them, having to implement
+				// 			a dummy implementation for each function every time would be a little tiny bit cumbersome.
+				//		- maybe that's not the original reason, but that's still a good reason
+				//		- maybe the original reason was just compiler efficieny:
+				// 			- if you're gonna do the check, you also need to recursively check the called function body and it's subfunctions' bodies.
+				//			- avoiding that seems worthwhile.
+				// 	THE ABOVE BASICALLY FORCES YOU TO HANDLE COMPILE-TIME CHECKING IN THE SAME WAY:
+				// 		- yeah, you could simply check the called functions before interpretation, but then
+				// 			what about the functions that those functions call, those must be left out of the process
+				//			and only checked once interpretation starts and the implementations are called upon.
+				//		- now, you're checking is split up into multiple chunks and any constraints the first chunk offers can be hacked
+				// 			by writing the code differently (nesting more).
+				//		- you could do it like this, but it's disgusting and stupid, better to wait until interpretation, much cleaner!
+				case op_type_t::INVALID: report_consteval_error("meta_printf invalid: blueprint invalid");
 
 				case op_type_t::NOOP:
 					state = table_entry.next_state;
@@ -387,7 +415,7 @@ namespace meta {
 
 				}
 			}
-			if (blueprint_parse_table[state * 129 + 128].op_type == op_type_t::INVALID) { throw "meta_printf invalid: blueprint invalid"; }
+			if (blueprint_parse_table[state * 129 + 128].op_type == op_type_t::INVALID) { report_consteval_error("meta_printf invalid: blueprint invalid"); }
 
 			if (text_encountered) {
 				program[operation_index].type = op_type_t::TEXT;

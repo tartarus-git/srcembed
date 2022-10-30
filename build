@@ -6,4 +6,4 @@ if [ ! -d "$script_dir_path/bin" ]; then
 fi
 
 #g++ -O3 -Wall -o $script_dir_path/bin/srcembed main.cpp
-clang++-11 -std=c++20 -O3 -Wall -o "$script_dir_path/bin/srcembed" -pthread main.cpp
+clang++-11 -std=c++20 -O3 -Wall -o "$script_dir_path/bin/srcembed" -pthread -fno-exceptions main.cpp

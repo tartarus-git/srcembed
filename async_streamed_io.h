@@ -1,12 +1,12 @@
 #pragma once
 
-#include <unistd.h>
-
-#include <algorithm> // TODO: For std::copy right?
+#include <algorithm>
 
 #include <thread>
 
-#include <iostream>
+#include "crossplatform_io.h"
+
+#include <iostream>		// TODO: Remove this one.
 
 namespace asyncio {
 
@@ -55,12 +55,9 @@ namespace asyncio {
 
 		static inline volatile char buffer[buffer_size * 2];
 
-		static constexpr volatile char* buffer_half_end_ptr = buffer + buffer_size;
-
-		// TODO: Do these both have to be nullptr, probs not.
-		static inline volatile char* buffer_stream_write_head = nullptr;
-		static inline volatile char* buffer_stream_write_head_copy = nullptr;
-		static inline volatile char* buffer_user_read_head = buffer;
+		static inline const volatile char* buffer_stream_write_head = nullptr;
+		static inline const volatile char* buffer_stream_write_head_copy = nullptr;
+		static inline const volatile char* buffer_user_read_head = buffer;
 
 		static inline std::thread reader_thread;
 
@@ -69,15 +66,20 @@ namespace asyncio {
 
 		static inline volatile bool finalize_reader_thread = false;
 
-		static ssize_t read_full_buffer(volatile char* buf, size_t count) noexcept {
+		static sioret_t read_full_buffer(volatile char* buf, size_t count) noexcept {
 			volatile char* original_buf_ptr = buf;
 			std::cerr << "got here\n";
 			while (true) {
 				if (finalize_reader_thread) { return -2; }
 
-				ssize_t bytes_read = ::read(STDIN_FILENO, (char*)buf, count);
-				bool nothing_to_read = false;
-				if (bytes_read == -1 && !(nothing_to_read = (errno == EAGAIN || errno == EWOULDBLOCK))) {
+				sioret_t bytes_read = crossplatform_read(STDIN_FILENO, (char*)buf, count);
+				if (bytes_read == -1) {
+					//!(nothing_to_read = (errno == EAGAIN || errno == EWOULDBLOCK))) {
+					
+					if (errno == EAGAIN || errno == EWOULDBLOCK) {		// NOTE: Branch predictor should essentially never fail here, making this super duper fast!
+						continue;
+					}
+
 					std::cerr << "got hard error on reading full buffer\n";
 					std::cerr << errno << '\n';
 					std::cerr << buf - original_buf_ptr << '\n';
@@ -86,9 +88,6 @@ namespace asyncio {
 				}
 				std::cerr << bytes_read << '\n';
 				if (bytes_read == 0) { return buf - original_buf_ptr; }
-				bytes_read += nothing_to_read;
-				// TODO: Test if the above line is faster than an if statement, look at assembly, stuff like that.
-				// It turns -1 to 0 when EAGAIN or EWOULDBLOCK is there. Consider that stdin isn't always a regular file.
 
 				count -= bytes_read;
 				if (count == 0) {
@@ -102,7 +101,7 @@ namespace asyncio {
 			while (true) {
 				while (empty_buffer == buffer_position_t::left) { }
 
-				ssize_t read_result = read_full_buffer(buffer + buffer_size, buffer_size);
+				sioret_t read_result = read_full_buffer(buffer + buffer_size, buffer_size);
 				std::cerr << "got past read_full_buffer\n";
 				switch (read_result) {
 				case -3:
@@ -151,6 +150,7 @@ namespace asyncio {
 		}
 
 	public:
+		// NOTE: Calling this function more than once is super duper UNDEFINED!
 		static bool initialize() noexcept {
 			int stdin_fd_flags = fcntl(STDIN_FILENO, F_GETFL);
 			if (stdin_fd_flags == -1) { return false; }
@@ -158,7 +158,7 @@ namespace asyncio {
 			if (fcntl(STDIN_FILENO, F_SETFL, stdin_fd_flags | O_NONBLOCK) == -1) { return false; }
 			std::cerr << "finished fcntl\n";
 
-			ssize_t read_result = read_full_buffer(buffer, buffer_size);
+			const sioret_t read_result = read_full_buffer(buffer, buffer_size);
 			switch (read_result) {
 			case -3: return false;
 			// case -2: while (true) { }	<-- shouldn't ever happen
@@ -189,67 +189,73 @@ namespace asyncio {
 
 		template <typename T>
 		static const T& minimum_value(const T& a, const T& b) noexcept {
-			return a < b ? a : b;
-			// TODO: Or like this?:
-			//return a + (b - a) * (a < b);
+			return a < b ? a : b;	// NOTE: This is ok, since: 1. it's so simple that compiler will optimize if there is something to optimize
+						// 			    2. there is nothing to optimize since "a" will be smaller every time until the one time where it isn't, where EOF is encountered. --> epic branch prediction, very efficient!
 		}
 
-		// NOTE: Behaviour is super duper undefined if you call this after encountering EOF.
-		// BTW: EOF is denoted by returning less than output_size. After that, no more calling this function!
-		// TODO: Actually, above note isn't true anymore, check to make sure though.
+		// NOTE: You can call this function as many times as you like, even input EOF. It'll always just return 0 in that case, but you can totally do it.
 		static ssize_t read(char* output_ptr, size_t output_size) noexcept {
-			volatile char* read_end_ptr = buffer_user_read_head + output_size;
-			size_t todo_change_later_orig_output_size = output_size;
-			char* todo_change_later_orig_output_ptr = output_ptr;
+			if (buffer_stream_write_head_copy != nullptr) {
+				std::cerr << "hit thing\n";
+				const volatile char* read_end_ptr = minimum_value(buffer_user_read_head + output_size, buffer_stream_write_head_copy);
+				std::copy(buffer_user_read_head, read_end_ptr, output_ptr);
+				const size_t amount_read = read_end_ptr - buffer_user_read_head;
+				buffer_user_read_head = read_end_ptr;
+				return amount_read;
+			}
+
+			const size_t orig_output_size = output_size;
+
 			while (true) {
 				std::cerr << "buwh: " << buffer_user_read_head - buffer << '\n';
+
 				// NOTE: The volatile after the * is the only volatile that is relevant for a theoretical pure
 				// dereference, without an attached read or write to the variable. Idk if that exists in
 				// C++ because every dereference I've ever seen is attached to a read or write, which then also
 				// looks at the volatile before the *.
 				// The only volatile necessary here is the one before the *, since the pointer itself is only accessed
 				// from one thread.
-				volatile char* const current_buffer_end_ptr = buffer_half_end_ptr + (bool)empty_buffer * buffer_size;
-				//std::cerr << "looped the thing\n";
+				const volatile char* const current_buffer_end_ptr = buffer + buffer_size + (bool)empty_buffer * buffer_size;
 
-				if (buffer_stream_write_head_copy != nullptr) {
-					std::cerr << "hit thing\n";
-					read_end_ptr = minimum_value(read_end_ptr, buffer_stream_write_head_copy);
-					size_t amount_read = std::copy(buffer_user_read_head, read_end_ptr, output_ptr) - todo_change_later_orig_output_ptr;
-					buffer_user_read_head = read_end_ptr;
-					return amount_read;
-				}
-				// TODO: Read up on exception overhead again, and then try to disable exceptions on this build because there is overhead on x86 even when no exception gets triggered.
-
+				const volatile char* read_end_ptr = buffer_user_read_head + output_size;
 				if (read_end_ptr < current_buffer_end_ptr) {
 					std::copy(buffer_user_read_head, read_end_ptr, output_ptr);
 					buffer_user_read_head = read_end_ptr;
-					return todo_change_later_orig_output_size;
+					return orig_output_size;
 				}
-	
+
 				std::copy(buffer_user_read_head, current_buffer_end_ptr, output_ptr);
 				const size_t full_space = current_buffer_end_ptr - buffer_user_read_head;
 				output_ptr += full_space;
 				output_size -= full_space;
 	
 				while (buffer_read_pending) { }
+
 				if (finalize_reader_thread) { return -1; }
 
 				buffer_stream_write_head_copy = buffer_stream_write_head;
 
-				// NOTE: We do this here
-				// so that an error doesn't cause buffer bytes to be eaten (it would do that if this were above the if-stm)
-				buffer_user_read_head = current_buffer_end_ptr - (bool)empty_buffer * (buffer_size * 2);
-				read_end_ptr = buffer_user_read_head + output_size;
-				// TODO: See if this would be faster with an if-statement, considering that we call read with small chunks
-				// instead of big ones.
-				// TODO: Put it down like you did the one below, looks better and is more understandable.
-
 				buffer_read_pending = true;
 				empty_buffer = !empty_buffer;
+
+				// NOTE: We do this here because:
+				// 1. We don't want error (finalize_reader_thread) to cause buffer bytes to be eaten, which would happen if this were above the if-stm.
+				// 2. We use the inverted value of empty_buffer, which is only accessible here.
+				buffer_user_read_head = buffer + (bool)empty_buffer * buffer_size;
+
+				if (buffer_stream_write_head_copy != nullptr) {
+					std::cerr << "hit thing\n";
+					const volatile char* read_end_ptr = minimum_value(buffer_user_read_head + output_size, buffer_stream_write_head_copy);
+					std::copy(buffer_user_read_head, read_end_ptr, output_ptr);
+					const size_t amount_read = read_end_ptr - buffer_user_read_head;
+					buffer_user_read_head = read_end_ptr;
+					return orig_output_size - output_size + amount_read;
+				}
 			}
 		}
 
+		// NOTE: As of this moment, I'm standardizing the fact that calling this function more than once and/or calling the initialize() function after calling this function is UNDEFINED.
+		// REASON: for the former: implementation may change ; for the latter: that just straight up doesn't work, probably causes some undefined behavior somewhere or something.
 		static void dispose() noexcept {
 			std::cerr << "hi there got to thing\n";
 			if (reader_thread.joinable()) {
@@ -264,8 +270,6 @@ namespace asyncio {
 	template <size_t buffer_size>
 	class stdout_stream {
 		static inline volatile char buffer[buffer_size * 2];
-
-		static constexpr volatile char* buffer_half_end_ptr = buffer + buffer_size;
 
 		static inline volatile char* buffer_user_write_head = buffer;
 
@@ -284,7 +288,7 @@ namespace asyncio {
 
 				if (finalize_flusher_thread) { return; }
 
-				if (::write(STDOUT_FILENO, (char*)buffer, flush_size) == -1) {
+				if (crossplatform_write(STDOUT_FILENO, (char*)buffer, flush_size) == -1) {
 					finalize_flusher_thread = true;
 					buffer_flush_pending = false;
 					return;
@@ -296,7 +300,7 @@ namespace asyncio {
 
 				if (finalize_flusher_thread) { return; }
 
-				if (::write(STDOUT_FILENO, (char*)(buffer + buffer_size), flush_size) == -1) {
+				if (crossplatform_write(STDOUT_FILENO, (char*)(buffer + buffer_size), flush_size) == -1) {
 					finalize_flusher_thread = true;
 					buffer_flush_pending = false;
 					return;
@@ -307,51 +311,74 @@ namespace asyncio {
 		}
 
 	public:
+		// NOTE: As above, UNDEFINED to call this more than once.
 		static void initialize() noexcept {
 			flusher_thread = std::thread((void(*)())flusher_thread_code);
 		}
 
 		static bool write(const char* input_ptr, size_t input_size) noexcept {
-			while (true) {
-				// NOTE: Converting the full_buffer bool to another integer type is totally fine, since converted bools
-				// always equal 0 or 1, all other non-zero values get transformed to 1 on conversion.
-				// NOTE: Unless of course bools cannot contain other non-zero values because converting to bool might snap to
-				// 0 or 1 already. That's an implementation detail though. Whether that detail is implemented by the
-				// standard or left up to the compiler I cannot say without further research.
-				const size_t free_space = buffer_half_end_ptr + (bool)full_buffer * buffer_size - buffer_user_write_head;
-				// TODO: This is great for pretty large writes and reads, but for small chunks, would it be better
-				// to have 2 while loops and alternate between them with if-stm every time one is full?
-				// Within those loops, you wouldn't have to algebraically check which buffer is full since it's a given.
-				// You should test this theory with some benchmarking.
-				if (input_size < free_space) {
-					buffer_user_write_head = std::copy(input_ptr, input_ptr + input_size, buffer_user_write_head);
-					return true;
+			// NOTE: We could have done this branchless, but we're optimizing for small writes, which makes this more optimal than branchless in this case.
+			if (full_buffer == buffer_position_t::left) {
+				while (true) {
+					// NOTE: Converting the full_buffer bool to another integer type is totally fine, since converted bools
+					// always equal 0 or 1, all other non-zero values get transformed to 1 on conversion.
+					// NOTE: Unless of course bools cannot contain other non-zero values because converting to bool might snap to
+					// 0 or 1 already. That's an implementation detail though. Whether that detail is implemented by the
+					// standard or left up to the compiler I cannot say without further research. I think compiler though.
+					const size_t free_space = buffer + buffer_size * 2 - buffer_user_write_head;
+					if (input_size < free_space) {
+						buffer_user_write_head = std::copy(input_ptr, input_ptr + input_size, buffer_user_write_head);
+						return true;
+					}
+
+					const char* new_input_ptr = input_ptr + free_space;
+					buffer_user_write_head = std::copy(input_ptr, new_input_ptr, buffer_user_write_head);
+					input_ptr = new_input_ptr;
+					input_size -= free_space;
+
+					while (buffer_flush_pending) { }
+
+					if (finalize_flusher_thread) { return false; }
+
+					buffer_flush_pending = true;
+					full_buffer = buffer_position_t::right;
+
+					buffer_user_write_head = buffer;
 				}
+			} else {
+				while (true) {
+					const size_t free_space = buffer + buffer_size - buffer_user_write_head;
+					if (input_size < free_space) {
+						buffer_user_write_head = std::copy(input_ptr, input_ptr + input_size, buffer_user_write_head);
+						return true;
+					}
 
-				const char* new_input_ptr = input_ptr + free_space;
-				buffer_user_write_head = std::copy(input_ptr, new_input_ptr, buffer_user_write_head);
-				input_ptr = new_input_ptr;
-				input_size -= free_space;
+					const char* new_input_ptr = input_ptr + free_space;
+					buffer_user_write_head = std::copy(input_ptr, new_input_ptr, buffer_user_write_head);
+					input_ptr = new_input_ptr;
+					input_size -= free_space;
 
-				while (buffer_flush_pending) { }
-				if (finalize_flusher_thread) { return false; }
-				buffer_flush_pending = true;
-				full_buffer = !full_buffer;
+					while (buffer_flush_pending) { }
 
-				// TODO: Same TODO as above.
-				buffer_user_write_head = buffer + (bool)full_buffer * buffer_size;
+					if (finalize_flusher_thread) { return false; }
+
+					buffer_flush_pending = true;
+					full_buffer = buffer_position_t::left;
+
+					buffer_user_write_head = buffer + buffer_size;
+				}
 			}
 		}
 
 		static bool flush() noexcept {
-			// Set flush_size to the exact amount that still needs to be flushed.
-			flush_size = buffer_user_write_head - (buffer + (bool)full_buffer * buffer_size);
-
 			// Wait for other buffer to finish flushing.
 			while (buffer_flush_pending) { }
 
 			// If error occurred, report it.
 			if (finalize_flusher_thread) { return false; }
+
+			// Set flush_size to the exact amount that still needs to be flushed.
+			flush_size = buffer_user_write_head - (buffer + (bool)full_buffer * buffer_size);
 
 			// Start flush.
 			buffer_flush_pending = true;
@@ -363,19 +390,23 @@ namespace asyncio {
 			// Reset flush_size to default.
 			flush_size = buffer_size;
 
-			// Though both buffers are empty (theoretically we could set this to start), it needs to be at start of correct buffer
+			// Though both buffers are empty (theoretically we could set this to "global" start), it needs to be at start of correct buffer
 			// for the rest of the system to work.
 			buffer_user_write_head = buffer + (bool)full_buffer * buffer_size;
+			// NOTE: We could replace the above branchless version with a branch over the whole function body, but we're optimizing for sparse flushing,
+			// which makes this our best option.
 
 			return true;
 		}
 
-		static void dispose() noexcept {
+		// NOTE: Calling this function more than once is UNDEFINED as per my standard for this header.
+		static bool dispose() noexcept {
 			std::cerr << "got to flusher disposal\n";
-			flush();		// TODO: Report error here.
+			if (!flush()) { return false; }
 			finalize_flusher_thread = true;
 			full_buffer = !full_buffer;
 			flusher_thread.join();
+			return true;
 		}
 	};
 
