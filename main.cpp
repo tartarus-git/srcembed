@@ -1,17 +1,18 @@
-#include <cstdlib>		// for std::exit(), EXIT_SUCCESS and EXIT_FAILURE, as well as every other syscall
+#include <cstdlib>		// for std::exit(), EXIT_SUCCESS and EXIT_FAILURE, as well as most other syscalls
+
 #ifndef PLATFORM_WINDOWS
-#include <unistd.h>		// for raw I/O
+
 #include <sys/mman.h>		// for mmap(), munmap() and posix_madvise() support
 #include <sys/stat.h>		// for fstat() support
 #include <fcntl.h>		// for posix_fadvise() support
-#else
-#include <io.h>			// for Windows raw I/O
+
 #endif
-#include <cstdio>		// for buffered I/O
+
 #include <cstring>		// for std::strcmp()
 
-#include <iostream>
+#include <iostream>		// TODO: Remove.
 
+#include "crossplatform_io.h"
 #include "async_streamed_io.h"
 
 // These (technically just stdout_stream) need to be located before meta_printf.h include.
@@ -20,14 +21,7 @@ using stdout_stream = asyncio::stdout_stream<65536>;
 
 #include "meta_printf.h"	// for compile-time printf
 
-#ifdef PLATFORM_WINDOWS
-
-#define STDOUT_FILENO 1
-#define STDERR_FILENO 2
-
-#define write(fd, buf, count) _write(fd, buf, count)
-
-#else
+#ifndef PLATFORM_WINDOWS
 
 const long pagesize = sysconf(_SC_PAGE_SIZE);
 
@@ -38,7 +32,7 @@ const char helpText[] = "usage: srcembed <--help> || ([--varname <variable name>
 			"function: converts input byte stream into source file (output through stdout)\n" \
 			"\n" \
 			"arguments:\n" \
-				"\t[--help]                      --> displays help text\n" \
+				"\t<--help>                      --> displays help text\n" \
 				"\t[--varname <variable name>]   --> specifies the variable name by which the embedded file shall be referred to in code\n" \
 				"\t<language>                    --> specifies the source language\n" \
 			"\n" \
@@ -53,7 +47,7 @@ const char helpText[] = "usage: srcembed <--help> || ([--varname <variable name>
 
 template <size_t message_size>
 void writeErrorAndExit(const char (&message)[message_size], int exitCode) noexcept {
-	write(STDERR_FILENO, message, message_size - 1);
+	crossplatform_write(STDERR_FILENO, message, message_size - 1);
 	halt_program_no_cleanup(exitCode);
 	// NOTE: No cleanup is necessary because:
 	//	1. Why should we waste our time cleaning things up, pretty pointless.
@@ -84,6 +78,8 @@ EPIPHANY:
 */
 
 #ifndef PLATFORM_WINDOWS
+
+// NOTE: UP TO HERE!
 
 bool mmapWriteDoubleBuffer(char*& bufferA, char*& bufferB, size_t bufferSize) noexcept {
 	// TODO: Consider picking the best huge page size for the job dynamically instead of just using the default one.
@@ -586,7 +582,7 @@ int manageArgs(int argc, const char* const * argv) noexcept {
 					}
 					if (std::strcmp(flagContent, "help") == 0) {
 						if (argc != 2) { REPORT_ERROR_AND_EXIT("use of \"--help\" flag with other args is illegal", EXIT_SUCCESS); }
-						if (write(STDOUT_FILENO, helpText, sizeof(helpText) - 1) == -1) {
+						if (crossplatform_write(STDOUT_FILENO, helpText, sizeof(helpText) - 1) == -1) {
 							REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 						}
 						std::exit(EXIT_SUCCESS);
