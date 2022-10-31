@@ -81,46 +81,49 @@ EPIPHANY:
 
 #ifndef PLATFORM_WINDOWS
 
-// NOTE: UP TO HERE!
+		// TODO: Make all the error messages nice looking and descriptive.
 
-bool mmapWriteDoubleBuffer(char*& bufferA, char*& bufferB, size_t bufferSize) noexcept {
+ssize_t mmap_write_double_buffer_simple(char*& bufferA, char*& bufferB, size_t bufferSize) noexcept {
+	bufferA = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (bufferA == MAP_FAILED) { return -1; }
+
+	bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (bufferB == MAP_FAILED) {
+		munmap(bufferA, bufferSize);
+		// NOTE: We don't handle error here because the program still has a chance at
+		// completing it's job even if the above call fails, we just end up leaking the memory.
+		return -1;
+	}
+
+	return bufferSize;
+}
+
+ssize_t mmapWriteDoubleBuffer(char*& bufferA, char*& bufferB, size_t bufferSize) noexcept {
 	const size_t huge_page_size = parse_huge_page_size_from_meminfo_file();
-	bufferSize += huge_page_size - ((bufferSize - 1) % huge_page_size) - 1;		// round up to nearest huge page boundary
-	// TODO: Is that the best way to do it? How would one do it in assembly?
+	if (huge_page_size <= 0) { return mmap_write_double_buffer_simple(bufferA, bufferB, bufferSize); }
 
 	// TODO: Consider picking the best huge page size for the job dynamically instead of just using the default one.
 
 	bufferA = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
-	if (bufferA == MAP_FAILED) {
-		bufferA = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-		if (bufferA == MAP_FAILED) { return false; }
+	if (bufferA == MAP_FAILED) { return mmap_write_double_buffer_simple(bufferA, bufferB, bufferSize); }
 
-		bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-		if (bufferB == MAP_FAILED) {
-			// TODO: Make all the error messages nice looking and descriptive.
-			if (munmap(bufferA, bufferSize) == -1) {
-				REPORT_ERROR_AND_EXIT("mmapWriteDoubleBuffer encountered fatal error: failed to munmap bufferA", EXIT_FAILURE);
-			}
-			return false;
-		}
+	// Round up to nearest huge page boundary.
+	const size_t rounded_bufferSize = bufferSize + huge_page_size - ((bufferSize - 1) % huge_page_size) - 1;
+	// TODO: Is that the best way to do it? How would one do it in assembly?
 
-		return true;
-	}
-
-	bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+	bufferB = (char*)mmap(nullptr, rounded_bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
 	if (bufferB == MAP_FAILED) {
 		bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 		if (bufferB == MAP_FAILED) {
-			// TODO: Also remove this unmap because the caller takes care of that.
-			if (munmap(bufferA, bufferSize) == -1) {
-				REPORT_ERROR_AND_EXIT("mmapWriteDoubleBuffer encountered fatal error: failed to munmap bufferA", EXIT_FAILURE);
-			}
-			return false;
+			munmap(bufferA, rounded_bufferSize);
+			return -1;
 		}
 	}
 
-	return true;
+	return rounded_bufferSize;
 }
+
+// NOTE: UP TO HERE!
 
 const unsigned char* mmapStdinFile(size_t stdinFileSize) noexcept {
 	// NOTE: Can't see huge pages being beneficial here, so we're leaving them out.
@@ -165,7 +168,8 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 	// NOTE: We separate buffers to avoid cache contention. TODO: Figure out how that works.
 	char* stdoutBuffers[2];
 
-	if (mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutPipeBufferSize) == false) { return DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP; }
+	const ssize_t actual_pipe_buffer_size = mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutPipeBufferSize);
+	if (actual_pipe_buffer_size == -1) { return DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP; }
 
 	bool stdoutBufferToggle = false;
 	char* currentStdoutBuffer = stdoutBuffers[0];
@@ -202,8 +206,8 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 				}
 
 				if (munmap((unsigned char*)stdinFileData, stdinFileSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap input file", EXIT_FAILURE); }
-				if (munmap((unsigned char*)stdoutBuffers[0], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
-				if (munmap((unsigned char*)stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap((unsigned char*)stdoutBuffers[0], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap((unsigned char*)stdoutBuffers[1], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 
 				return DataTransferExitCode::SUCCESS;
@@ -240,8 +244,8 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 					}
 
 					if (munmap((unsigned char*)stdinFileData, stdinFileSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap input file", EXIT_FAILURE); }
-					if (munmap((unsigned char*)stdoutBuffers[0], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
-					if (munmap((unsigned char*)stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+					if (munmap((unsigned char*)stdoutBuffers[0], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+					if (munmap((unsigned char*)stdoutBuffers[1], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 					return DataTransferExitCode::SUCCESS;
 				}
@@ -254,8 +258,8 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 				}
 
 				if (munmap((unsigned char*)stdinFileData, stdinFileSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap input file", EXIT_FAILURE); }
-				if (munmap((unsigned char*)stdoutBuffers[0], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
-				if (munmap((unsigned char*)stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap((unsigned char*)stdoutBuffers[0], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap((unsigned char*)stdoutBuffers[1], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 				amountOfBufferFilled = tempBuffer_head - tempBuffer_tail;
 				// TODO: You're doing all this stuff with offsets, could you do it with pointers instead, we could rework stdout_stream to allow that.
@@ -325,7 +329,8 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 	// NOTE: We separate buffers to avoid cache contention. TODO: Figure out how that works.
 	char* stdoutBuffers[2];
 
-	if (mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutPipeBufferSize) == false) { return DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP; }
+	const ssize_t actual_pipe_buffer_size = mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutPipeBufferSize);
+	if (actual_pipe_buffer_size == -1) { return DataTransferExitCode::NEEDS_FALLBACK_FROM_MMAP; }
 
 	bool stdoutBufferToggle = false;
 	char* currentStdoutBuffer = stdoutBuffers[0];
@@ -370,8 +375,8 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 					REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 				}
 
-				if (munmap(stdoutBuffers[0], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
-				if (munmap(stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap(stdoutBuffers[0], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap(stdoutBuffers[1], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 				return DataTransferExitCode::SUCCESS;
 			}
@@ -409,8 +414,8 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 						REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 					}
 
-					if (munmap(stdoutBuffers[0], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
-					if (munmap(stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+					if (munmap(stdoutBuffers[0], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+					if (munmap(stdoutBuffers[1], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 					return DataTransferExitCode::SUCCESS;
 				}
@@ -422,8 +427,8 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 					REPORT_ERROR_AND_EXIT("vmsplice failed", EXIT_FAILURE);
 				}
 
-				if (munmap(stdoutBuffers[0], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
-				if (munmap(stdoutBuffers[1], stdoutPipeBufferSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap(stdoutBuffers[0], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
+				if (munmap(stdoutBuffers[1], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 				amountOfBufferFilled = tempBuffer_head - tempBuffer_tail;
 				if (!stdout_stream::write(tempBuffer + tempBuffer_tail, amountOfBufferFilled)) {
