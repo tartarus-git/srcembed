@@ -21,6 +21,8 @@ using stdout_stream = asyncio::stdout_stream<65536>;
 
 #include "meta_printf.h"	// for compile-time printf
 
+#include "meminfo_parser.h"	// for getting huge page size from /proc/meminfo
+
 #ifndef PLATFORM_WINDOWS
 
 const long pagesize = sysconf(_SC_PAGE_SIZE);
@@ -82,7 +84,12 @@ EPIPHANY:
 // NOTE: UP TO HERE!
 
 bool mmapWriteDoubleBuffer(char*& bufferA, char*& bufferB, size_t bufferSize) noexcept {
+	const size_t huge_page_size = parse_huge_page_size_from_meminfo_file();
+	bufferSize += huge_page_size - ((bufferSize - 1) % huge_page_size) - 1;		// round up to nearest huge page boundary
+	// TODO: Is that the best way to do it? How would one do it in assembly?
+
 	// TODO: Consider picking the best huge page size for the job dynamically instead of just using the default one.
+
 	bufferA = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
 	if (bufferA == MAP_FAILED) {
 		bufferA = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -104,8 +111,6 @@ bool mmapWriteDoubleBuffer(char*& bufferA, char*& bufferB, size_t bufferSize) no
 	if (bufferB == MAP_FAILED) {
 		bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 		if (bufferB == MAP_FAILED) {
-			// bufferSize has to be a multiple of huge page size if huge pages are used, fix that. TODO
-			// TODO: You can go and get the huge page size from /proc/meminfo. Parse that file.
 			// TODO: Also remove this unmap because the caller takes care of that.
 			if (munmap(bufferA, bufferSize) == -1) {
 				REPORT_ERROR_AND_EXIT("mmapWriteDoubleBuffer encountered fatal error: failed to munmap bufferA", EXIT_FAILURE);
