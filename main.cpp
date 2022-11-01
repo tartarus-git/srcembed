@@ -667,6 +667,8 @@ void outputSource(const char* language) noexcept {
 // TODO: Actually, consider making vm splice asynchronous as well. That virtual to physical mapping that it does is also kind of slow, we could smush that together with other timings if we do it in parallel with twice the buffer space to compensate for it.
 
 int main(int argc, const char* const * argv) noexcept {
+	std::cerr << parse_huge_page_size_from_meminfo_file() << '\n';
+
 	// C++ standard I/O can suck it, it's super slow.
 	// We were using C standard I/O, while that's super fast, it's not fast enough, so we're using a custom I/O system now.
 
