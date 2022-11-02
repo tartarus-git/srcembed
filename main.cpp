@@ -561,7 +561,20 @@ use_data_mode_read_vmsplice:
 	return dataMode_read_write<initial_printf_pattern, printf_pattern, single_printf_pattern, chunk_indices...>();
 }
 
-#define optimizedDataTransformationAndOutput(initialPrintfPattern, printfPattern, singlePrintfPattern, ...) [&]() { static constexpr auto initial_printf_pattern = meta::construct_meta_array(initialPrintfPattern); static constexpr auto printf_pattern = meta::construct_meta_array(printfPattern); static constexpr auto single_printf_pattern = meta::construct_meta_array(singlePrintfPattern); return optimizedDataTransformationAndOutput_raw<initial_printf_pattern, printf_pattern, single_printf_pattern, __VA_ARGS__>(); }()
+// TODO: Convert all these types to fixed width types
+// SIDE-NOTE: No reinterpret_cast's allowed in constant expressions, seems restrictive, and it is, but it's got a pretty reasonable explanation.
+template <const auto& single_printf_pattern, unsigned char... chunk_indices>
+consteval auto generate_chunked_printf_pattern() {
+	meta::meta_string<sizeof...(chunk_indices) * sizeof(single_printf_pattern)> result;
+	for (size_t i = 0; i < sizeof(result); i += sizeof(single_printf_pattern)) {
+		for (size_t j = 0; j < sizeof(single_printf_pattern); j++) {
+			result[i + j] = single_printf_pattern[j];
+		}
+	}
+	return result;
+}
+
+#define optimizedDataTransformationAndOutput(initialPrintfPattern, singlePrintfPattern, ...) [&]() { static constexpr auto initial_printf_pattern = meta::construct_meta_array(initialPrintfPattern); static constexpr auto single_printf_pattern = meta::construct_meta_array(singlePrintfPattern); static constexpr auto printf_pattern = generate_chunked_printf_pattern<single_printf_pattern, __VA_ARGS__>(); return optimizedDataTransformationAndOutput_raw<initial_printf_pattern, printf_pattern, single_printf_pattern, __VA_ARGS__>(); }()
 
 namespace flags {
 	const char* varname = nullptr;
@@ -607,7 +620,7 @@ int manageArgs(int argc, const char* const * argv) noexcept {
 }
 
 void output_C_CPP_array_data() noexcept {
-	if (optimizedDataTransformationAndOutput("%u", ", %u, %u, %u, %u, %u, %u, %u, %u", ", %u", 0, 1, 2, 3, 4, 5, 6, 7) == false) {
+	if (optimizedDataTransformationAndOutput("%u", ", %u", 0, 1, 2, 3, 4, 5, 6, 7) == false) {
 		REPORT_ERROR_AND_EXIT("no data received, language requires data", EXIT_FAILURE);
 	}
 }
