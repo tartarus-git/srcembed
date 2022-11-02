@@ -10,8 +10,6 @@
 
 #include <cstring>		// for std::strcmp()
 
-#include <iostream>		// TODO: Remove.
-
 #include "crossplatform_io.h"
 #include "async_streamed_io.h"
 
@@ -459,6 +457,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 
 #endif
 
+// TODO: Start here with removing middle thing after testing speed.
 template <const auto& initial_printf_pattern, const auto& printf_pattern, const auto& single_printf_pattern, unsigned char... chunk_indices>
 bool dataMode_read_write() noexcept {
 	constexpr unsigned char bytes_per_chunk = sizeof...(chunk_indices);
@@ -477,9 +476,7 @@ bool dataMode_read_write() noexcept {
 	// a) EOF
 	// b) an error occurred
 	// In this way, it is very different to the raw I/O (read and write).
-	std::cerr << "got to before reading\n";
 	int16_t bytesRead = stdin_stream::read((char*)buffer, 1);
-	std::cerr << "got to after reading\n";
 	switch (bytesRead) {
 	case -1:
 		REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
@@ -504,7 +501,6 @@ bool dataMode_read_write() noexcept {
 		}
 
 		for (unsigned char i = 0; i < bytesRead; i++) {
-			std::cerr << "iteration: " << (int)i << '\n';
 			if (meta_printf_no_terminator(single_printf_pattern.data, buffer[i]) < 0) {
 				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}

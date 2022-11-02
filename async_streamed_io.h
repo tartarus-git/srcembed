@@ -6,8 +6,6 @@
 
 #include "crossplatform_io.h"
 
-#include <iostream>		// TODO: Remove this one.
-
 namespace asyncio {
 
 	enum class buffer_position_t : bool {
@@ -68,31 +66,20 @@ namespace asyncio {
 
 		static sioret_t read_full_buffer(volatile char* buf, size_t count) noexcept {
 			volatile char* original_buf_ptr = buf;
-			std::cerr << "got here\n";
 			while (true) {
 				if (finalize_reader_thread) { return -2; }
 
 				sioret_t bytes_read = crossplatform_read(STDIN_FILENO, (char*)buf, count);
 				if (bytes_read == -1) {
-					//!(nothing_to_read = (errno == EAGAIN || errno == EWOULDBLOCK))) {
-					
 					if (errno == EAGAIN || errno == EWOULDBLOCK) {		// NOTE: Branch predictor should essentially never fail here, making this super duper fast!
 						continue;
 					}
-
-					std::cerr << "got hard error on reading full buffer\n";
-					std::cerr << errno << '\n';
-					std::cerr << buf - original_buf_ptr << '\n';
-					std::cerr << count << '\n';
 					return -3;
 				}
-				std::cerr << bytes_read << '\n';
 				if (bytes_read == 0) { return buf - original_buf_ptr; }
 
 				count -= bytes_read;
-				if (count == 0) {
-					std::cerr << "hit full exit scenario\n";
-					return -1; }
+				if (count == 0) { return -1; }
 				buf += bytes_read;
 			}
 		}
@@ -102,20 +89,13 @@ namespace asyncio {
 				while (empty_buffer == buffer_position_t::left) { }
 
 				sioret_t read_result = read_full_buffer(buffer + buffer_size, buffer_size);
-				std::cerr << "got past read_full_buffer\n";
 				switch (read_result) {
 				case -3:
-					std::cerr << "read_full_buffer got error returned\n";
 					finalize_reader_thread = true;
 					buffer_read_pending = false;
-				case -2:
-					std::cerr << "wanted to exit\n";
-					return;
-				case -1:
-					 std::cerr << "full return\n";
-					 break;
+				case -2: return;
+				case -1: break;
 				default:
-					 std::cerr << "right end state hit\n";
 					 buffer_stream_write_head = buffer + buffer_size + read_result;
 					 buffer_read_pending = false;
 					 return;
@@ -126,20 +106,13 @@ namespace asyncio {
 				while (empty_buffer == buffer_position_t::right) { }
 
 				read_result = read_full_buffer(buffer, buffer_size);
-				std::cerr << "got past read_full_buffer\n";
 				switch (read_result) {
 				case -3:
-					std::cerr << "read_full_buffer got error returned\n";
 					finalize_reader_thread = true;
 					buffer_read_pending = false;
-				case -2:
-					std::cerr << "wanted to exit\n";
-					return;
-				case -1:
-					 std::cerr << "full return\n";
-					 break;
+				case -2: return;
+				case -1: break;
 				default:
-					 std::cerr << "left end state hit\n";
 					 buffer_stream_write_head = buffer + read_result;
 					 buffer_read_pending = false;
 					 return;
@@ -154,9 +127,7 @@ namespace asyncio {
 		static bool initialize() noexcept {
 			int stdin_fd_flags = fcntl(STDIN_FILENO, F_GETFL);
 			if (stdin_fd_flags == -1) { return false; }
-			std::cerr << "starting fcntl\n";
 			if (fcntl(STDIN_FILENO, F_SETFL, stdin_fd_flags | O_NONBLOCK) == -1) { return false; }
-			std::cerr << "finished fcntl\n";
 
 			const sioret_t read_result = read_full_buffer(buffer, buffer_size);
 			switch (read_result) {
@@ -164,14 +135,9 @@ namespace asyncio {
 			// case -2: while (true) { }	<-- shouldn't ever happen
 			case -1: break;
 			default:
-				 std::cerr << "hit other thing\n";
-				 std::cerr << (const char*)buffer << '\n';
 				 buffer_stream_write_head_copy = buffer + read_result;
-				 std::cerr << "set write head\n";
 				 return true;
 			}
-
-			std::cerr << "starting stdin thread\n";
 
 			// INTERESTING NOTE: std::thread cannot be made volatile, but it doesn't have to be.
 			// In C++, memory is "committed" before calling functions, because those functions could theoretically
@@ -196,7 +162,6 @@ namespace asyncio {
 		// NOTE: You can call this function as many times as you like, even input EOF. It'll always just return 0 in that case, but you can totally do it.
 		static ssize_t read(char* output_ptr, size_t output_size) noexcept {
 			if (buffer_stream_write_head_copy != nullptr) {
-				std::cerr << "hit thing\n";
 				const volatile char* read_end_ptr = minimum_value(buffer_user_read_head + output_size, buffer_stream_write_head_copy);
 				std::copy(buffer_user_read_head, read_end_ptr, output_ptr);
 				const size_t amount_read = read_end_ptr - buffer_user_read_head;
@@ -207,8 +172,6 @@ namespace asyncio {
 			const size_t orig_output_size = output_size;
 
 			while (true) {
-				std::cerr << "buwh: " << buffer_user_read_head - buffer << '\n';
-
 				// NOTE: The volatile after the * is the only volatile that is relevant for a theoretical pure
 				// dereference, without an attached read or write to the variable. Idk if that exists in
 				// C++ because every dereference I've ever seen is attached to a read or write, which then also
@@ -244,7 +207,6 @@ namespace asyncio {
 				buffer_user_read_head = buffer + (bool)empty_buffer * buffer_size;
 
 				if (buffer_stream_write_head_copy != nullptr) {
-					std::cerr << "hit thing\n";
 					const volatile char* read_end_ptr = minimum_value(buffer_user_read_head + output_size, buffer_stream_write_head_copy);
 					std::copy(buffer_user_read_head, read_end_ptr, output_ptr);
 					const size_t amount_read = read_end_ptr - buffer_user_read_head;
@@ -257,13 +219,11 @@ namespace asyncio {
 		// NOTE: As of this moment, I'm standardizing the fact that calling this function more than once and/or calling the initialize() function after calling this function is UNDEFINED.
 		// REASON: for the former: implementation may change ; for the latter: that just straight up doesn't work, probably causes some undefined behavior somewhere or something.
 		static void dispose() noexcept {
-			std::cerr << "hi there got to thing\n";
 			if (reader_thread.joinable()) {
 				finalize_reader_thread = true;
 				empty_buffer = !empty_buffer;
 				reader_thread.join();
 			}
-			std::cerr << "joined thread 1\n";
 		}
 	};
 
@@ -401,7 +361,6 @@ namespace asyncio {
 
 		// NOTE: Calling this function more than once is UNDEFINED as per my standard for this header.
 		static bool dispose() noexcept {
-			std::cerr << "got to flusher disposal\n";
 			if (!flush()) { return false; }
 			finalize_flusher_thread = true;
 			full_buffer = !full_buffer;
