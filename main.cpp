@@ -458,9 +458,9 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 #endif
 
 // TODO: Start here with removing middle thing after testing speed.
-template <const auto& initial_printf_pattern, const auto& printf_pattern, const auto& single_printf_pattern, unsigned char... chunk_indices>
+template <const auto& initial_printf_pattern, const auto& single_printf_pattern>
 bool dataMode_read_write() noexcept {
-	constexpr unsigned char bytes_per_chunk = sizeof...(chunk_indices);
+	constexpr size_t bytes_per_chunk = 1;
 
 #ifndef PLATFORM_WINDOWS
 	if (posix_fadvise(STDIN_FILENO, 0, 0, POSIX_FADV_NOREUSE) == 0) {
@@ -470,6 +470,7 @@ bool dataMode_read_write() noexcept {
 	}
 #endif
 
+	// TODO: eliminate need for this buffer, that would be faster wouldn't it?
 	unsigned char buffer[bytes_per_chunk];
 
 	// NOTE: fread shouldn't ever return less than the wanted amount of bytes unless either:
@@ -490,7 +491,7 @@ bool dataMode_read_write() noexcept {
 		bytesRead = stdin_stream::read((char*)buffer, bytes_per_chunk);
 
 		if (bytesRead == bytes_per_chunk) {
-			if (meta_printf_no_terminator(printf_pattern.data, buffer[chunk_indices]...) < 0) {
+			if (meta_printf_no_terminator(single_printf_pattern.data, buffer[0]) < 0) {
 				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}
 			continue;
@@ -498,12 +499,6 @@ bool dataMode_read_write() noexcept {
 
 		if (bytesRead == -1) {
 			REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
-		}
-
-		for (unsigned char i = 0; i < bytesRead; i++) {
-			if (meta_printf_no_terminator(single_printf_pattern.data, buffer[i]) < 0) {
-				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
-			}
 		}
 
 		return true;
@@ -541,7 +536,7 @@ bool optimizedDataTransformationAndOutput_raw() noexcept {
 				if (dataMode_mmap_write<initial_printf_pattern, printf_pattern, single_printf_pattern, chunk_indices...>(statusA.st_size)) { return true; }
 			}
 
-			return dataMode_read_write<initial_printf_pattern, printf_pattern, single_printf_pattern, chunk_indices...>();
+			return dataMode_read_write<initial_printf_pattern, single_printf_pattern>();
 		}
 	}
 
@@ -558,7 +553,7 @@ use_data_mode_read_vmsplice:
 
 #endif
 
-	return dataMode_read_write<initial_printf_pattern, printf_pattern, single_printf_pattern, chunk_indices...>();
+	return dataMode_read_write<initial_printf_pattern, single_printf_pattern>();
 }
 
 #define optimizedDataTransformationAndOutput(initialPrintfPattern, printfPattern, singlePrintfPattern, ...) [&]() { static constexpr auto initial_printf_pattern = meta::construct_meta_array(initialPrintfPattern); static constexpr auto printf_pattern = meta::construct_meta_array(printfPattern); static constexpr auto single_printf_pattern = meta::construct_meta_array(singlePrintfPattern); return optimizedDataTransformationAndOutput_raw<initial_printf_pattern, printf_pattern, single_printf_pattern, __VA_ARGS__>(); }()
