@@ -277,55 +277,53 @@ namespace asyncio {
 		}
 
 		static bool write(const char* input_ptr, size_t input_size) noexcept {
-			// NOTE: We could have done this branchless, but we're optimizing for small writes, which makes this more optimal than branchless in this case.
-			if (full_buffer == buffer_position_t::left) {
-				while (true) {
-					// NOTE: Converting the full_buffer bool to another integer type is totally fine, since converted bools
-					// always equal 0 or 1, all other non-zero values get transformed to 1 on conversion.
-					// NOTE: Unless of course bools cannot contain other non-zero values because converting to bool might snap to
-					// 0 or 1 already. That's an implementation detail though. Whether that detail is implemented by the
-					// standard or left up to the compiler I cannot say without further research. I think compiler though.
-					const size_t free_space = buffer + buffer_size * 2 - buffer_user_write_head;
-					if (input_size < free_space) {
-						buffer_user_write_head = std::copy(input_ptr, input_ptr + input_size, buffer_user_write_head);
-						return true;
-					}
+			while (true) {
+				// NOTE: We could have done this branchless, but we're optimizing for small writes, which makes this more optimal than branchless in this case.
+				if (full_buffer == buffer_position_t::left) {
+						// NOTE: Converting the full_buffer bool to another integer type is totally fine, since converted bools
+						// always equal 0 or 1, all other non-zero values get transformed to 1 on conversion.
+						// NOTE: Unless of course bools cannot contain other non-zero values because converting to bool might snap to
+						// 0 or 1 already. That's an implementation detail though. Whether that detail is implemented by the
+						// standard or left up to the compiler I cannot say without further research. I think compiler though.
+						const size_t free_space = buffer + buffer_size * 2 - buffer_user_write_head;
+						if (input_size < free_space) {
+							buffer_user_write_head = std::copy(input_ptr, input_ptr + input_size, buffer_user_write_head);
+							return true;
+						}
 
-					const char* new_input_ptr = input_ptr + free_space;
-					buffer_user_write_head = std::copy(input_ptr, new_input_ptr, buffer_user_write_head);
-					input_ptr = new_input_ptr;
-					input_size -= free_space;
+						const char* new_input_ptr = input_ptr + free_space;
+						buffer_user_write_head = std::copy(input_ptr, new_input_ptr, buffer_user_write_head);
+						input_ptr = new_input_ptr;
+						input_size -= free_space;
 
-					while (buffer_flush_pending) { }
+						while (buffer_flush_pending) { }
 
-					if (finalize_flusher_thread) { return false; }
+						if (finalize_flusher_thread) { return false; }
 
-					buffer_flush_pending = true;
-					full_buffer = buffer_position_t::right;
+						buffer_flush_pending = true;
+						full_buffer = buffer_position_t::right;
 
-					buffer_user_write_head = buffer;
-				}
-			} else {
-				while (true) {
-					const size_t free_space = buffer + buffer_size - buffer_user_write_head;
-					if (input_size < free_space) {
-						buffer_user_write_head = std::copy(input_ptr, input_ptr + input_size, buffer_user_write_head);
-						return true;
-					}
+						buffer_user_write_head = buffer;
+				} else {
+						const size_t free_space = buffer + buffer_size - buffer_user_write_head;
+						if (input_size < free_space) {
+							buffer_user_write_head = std::copy(input_ptr, input_ptr + input_size, buffer_user_write_head);
+							return true;
+						}
 
-					const char* new_input_ptr = input_ptr + free_space;
-					buffer_user_write_head = std::copy(input_ptr, new_input_ptr, buffer_user_write_head);
-					input_ptr = new_input_ptr;
-					input_size -= free_space;
+						const char* new_input_ptr = input_ptr + free_space;
+						buffer_user_write_head = std::copy(input_ptr, new_input_ptr, buffer_user_write_head);
+						input_ptr = new_input_ptr;
+						input_size -= free_space;
 
-					while (buffer_flush_pending) { }
+						while (buffer_flush_pending) { }
 
-					if (finalize_flusher_thread) { return false; }
+						if (finalize_flusher_thread) { return false; }
 
-					buffer_flush_pending = true;
-					full_buffer = buffer_position_t::left;
+						buffer_flush_pending = true;
+						full_buffer = buffer_position_t::left;
 
-					buffer_user_write_head = buffer + buffer_size;
+						buffer_user_write_head = buffer + buffer_size;
 				}
 			}
 		}
