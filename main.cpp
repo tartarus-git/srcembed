@@ -619,8 +619,10 @@ int manageArgs(int argc, const char* const * argv) noexcept {
 	return normalArgIndex;
 }
 
+#define COUNT_TO_31_FROM_0 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+
 void output_C_CPP_array_data() noexcept {
-	if (optimizedDataTransformationAndOutput("%u", ", %u", 0, 1, 2, 3, 4, 5, 6, 7) == false) {
+	if (optimizedDataTransformationAndOutput("%u", ", %u", COUNT_TO_31_FROM_0) == false) {
 		REPORT_ERROR_AND_EXIT("no data received, language requires data", EXIT_FAILURE);
 	}
 }
