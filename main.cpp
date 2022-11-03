@@ -8,7 +8,7 @@
 
 #endif
 
-#include <cstring>		// for std::strcmp()
+#include <cstring>		// for std::strcmp() and std::memcpy()
 
 #include "crossplatform_io.h"
 #include "async_streamed_io.h"
@@ -113,15 +113,13 @@ ssize_t mmapWriteDoubleBuffer(char*& bufferA, char*& bufferB, size_t bufferSize)
 	if (bufferB == MAP_FAILED) {
 		bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 		if (bufferB == MAP_FAILED) {
-			munmap(bufferA, rounded_bufferSize);
+			munmap(bufferA, rounded_bufferSize);		// TODO: Make sure this doesn't break anything.
 			return -1;
 		}
 	}
 
 	return rounded_bufferSize;
 }
-
-// NOTE: UP TO HERE!
 
 const unsigned char* mmapStdinFile(size_t stdinFileSize) noexcept {
 	// NOTE: Can't see huge pages being beneficial here, so we're leaving them out.
@@ -217,6 +215,10 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 			amountOfBufferFilled += bytesWritten;
 		}
 
+		// NOTE: There is a possibility that changing all this code to work with more pointers instead of offsets into arrays would be better, but it looks fine to me right now.
+		// I don't reckon we would change that much by doing that, I'm betting it would be pretty much exactly as fast in this case.
+		// Anyway, I'm confident enough that I'm not going to try rewriting it with pointers in order to check my theory. That would be a pain if I'm being honest.
+
 		tempBuffer_tail = stdoutPipeBufferSize - amountOfBufferFilled;
 		for (tempBuffer_head = 0; tempBuffer_head < tempBuffer_tail;) {
 			if (stdinFileDataPosition > stdinFileDataCutoff) {
@@ -260,7 +262,6 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 				if (munmap((unsigned char*)stdoutBuffers[1], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
 				amountOfBufferFilled = tempBuffer_head - tempBuffer_tail;
-				// TODO: You're doing all this stuff with offsets, could you do it with pointers instead, we could rework stdout_stream to allow that.
 				if (!stdout_stream::write(tempBuffer + tempBuffer_tail, amountOfBufferFilled)) {
 					REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 				}
@@ -296,6 +297,7 @@ bool dataMode_mmap_write(size_t stdinFileSize) noexcept {
 	if (stdinFileData == MAP_FAILED) { return false; }
 
 	if (meta_printf_no_terminator(initial_printf_pattern.data, stdinFileData[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
+
 	size_t i;
 	for (i = 1; i < stdinFileSize + 1 - bytes_per_chunk; i += bytes_per_chunk) {
 		if (meta_printf_no_terminator(printf_pattern.data, stdinFileData[i + chunk_indices]...) < 0) {
@@ -309,6 +311,7 @@ bool dataMode_mmap_write(size_t stdinFileSize) noexcept {
 	}
 
 	if (munmap((unsigned char*)stdinFileData, stdinFileSize) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap input file", EXIT_FAILURE); }
+
 	return true;
 }
 
@@ -337,29 +340,23 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 	size_t tempBuffer_head = 0;
 	size_t tempBuffer_tail = 0;
 
-	unsigned char inputBuffer[bytes_per_chunk];
-	// TODO: Data type gets smaller once you remove/constrain chunk_indices stuff since your using new output system.
-	int16_t bytesRead = stdin_stream::read((char*)inputBuffer, 1);
-	switch (bytesRead) {
-	case -1:
-		REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
-	case 0:
-		return DataTransferExitCode::NO_INPUT_DATA;
-	}
+	char inputBuffer[bytes_per_chunk];
+	stdin_stream::data_ptr_return_t data_ptr = stdin_stream::get_data_ptr(inputBuffer, 1);
+	if (!data_ptr.data_ptr) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
+	if (data_ptr.size == 0) { return DataTransferExitCode::NO_INPUT_DATA; }
 
-	int bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer, initial_printf_pattern.data, inputBuffer[0]);
-	if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
+	int bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer, initial_printf_pattern.data, (uint8_t)data_ptr.data_ptr[0]);
+	if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }	// TODO: Change all these < 0 checks in the codebase to better checks, since our printf is more defined than the normal one.
 	size_t amountOfBufferFilled = bytesWritten;
 
 	while (true) {
 		while (amountOfBufferFilled <= stdoutPipeBufferSize - max_printf_write_length) {
-			bytesRead = stdin_stream::read((char*)inputBuffer, bytes_per_chunk);
-			if (bytesRead == -1) {
-				REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
-			}
-			if (bytesRead < bytes_per_chunk) {
-				for (unsigned char i = 0; i < bytesRead; i++) {
-					bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, single_printf_pattern.data, inputBuffer[i]);
+			data_ptr = stdin_stream::get_data_ptr(inputBuffer, bytes_per_chunk);
+			if (!data_ptr.data_ptr) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
+
+			if (data_ptr.size < bytes_per_chunk) {
+				for (unsigned char i = 0; i < data_ptr.size; i++) {
+					bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, single_printf_pattern.data, (uint8_t)data_ptr.data_ptr[i]);
 					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					amountOfBufferFilled += bytesWritten;
 				}
@@ -379,20 +376,19 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 				return DataTransferExitCode::SUCCESS;
 			}
 
-			bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, printf_pattern.data, inputBuffer[chunk_indices]...);
+			bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, printf_pattern.data, (uint8_t)data_ptr.data_ptr[chunk_indices]...);
 			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			amountOfBufferFilled += bytesWritten;
 		}
 
 		tempBuffer_tail = stdoutPipeBufferSize - amountOfBufferFilled;
 		for (tempBuffer_head = 0; tempBuffer_head < tempBuffer_tail;) {
-			bytesRead = stdin_stream::read((char*)inputBuffer, bytes_per_chunk);
-			if (bytesRead == -1) {
-				REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
-			}
-			if (bytesRead < bytes_per_chunk) {
-				for (unsigned char i = 0; i < bytesRead; i++) {
-					bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, single_printf_pattern.data, inputBuffer[i]);
+			data_ptr = stdin_stream::get_data_ptr(inputBuffer, bytes_per_chunk);
+			if (!data_ptr.data_ptr) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
+
+			if (data_ptr.size < bytes_per_chunk) {
+				for (unsigned char i = 0; i < data_ptr.size; i++) {
+					bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, single_printf_pattern.data, (uint8_t)data_ptr.data_ptr[i]);
 					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					tempBuffer_head += bytesWritten;
 				}
@@ -430,13 +426,13 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 
 				amountOfBufferFilled = tempBuffer_head - tempBuffer_tail;
 				if (!stdout_stream::write(tempBuffer + tempBuffer_tail, amountOfBufferFilled)) {
-					if (ferror(stdout)) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
+					REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 				}
 
 				return DataTransferExitCode::SUCCESS;
 			}
 
-			bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, printf_pattern.data, inputBuffer[chunk_indices]...);
+			bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, printf_pattern.data, (uint8_t)data_ptr.data_ptr[chunk_indices]...);
 			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			tempBuffer_head += bytesWritten;
 		}
@@ -476,19 +472,13 @@ bool dataMode_read_write() noexcept {
 	// a) EOF
 	// b) an error occurred
 	// In this way, it is very different to the raw I/O (read and write).
-	int16_t bytesRead = stdin_stream::read(buffer, 1);
-	switch (bytesRead) {
-	case -1:
-		REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
-	case 0:
-		return false;
-	}
+	stdin_stream::data_ptr_return_t data_ptr = stdin_stream::get_data_ptr(buffer, 1);
+	if (!data_ptr.data_ptr) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
+	if (data_ptr.size == 0) { return false; }
 
 	if (meta_printf_no_terminator(initial_printf_pattern.data, (unsigned char)buffer[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 
 	while (true) {
-		//bytesRead = stdin_stream::read((char*)buffer, bytes_per_chunk);
-
 		stdin_stream::data_ptr_return_t data_ptr = stdin_stream::get_data_ptr(buffer, bytes_per_chunk);
 
 		if (data_ptr.size == bytes_per_chunk) {
@@ -669,13 +659,6 @@ void outputSource(const char* language) noexcept {
 
 	REPORT_ERROR_AND_EXIT("invalid language", EXIT_SUCCESS);
 }
-
-// TODO: I think the main source of slowness is fwrite and fread.
-// We need a custom streamed I/O implementation does the refilling of the buffer asynchronously.
-// That way, we can write and do calculations at the same time, we'll be condensing the timeline and making everything a lot faster.
-// Same with input. I don't want a straight circular buffer that writes and reads every chance it gets since that's a lot of unnecessary syscalls, which doesn't sound like a good idea.
-// Maybe each buffer has two segments, each refills while the other is being used for reading/writing. When seg 2 is done and seg 1 gets selected again, the selector needs to check if reading/writing is done on seg 1.
-// Same with transition from seg 1 to seg 2.
 
 // TODO: Actually, consider making vm splice asynchronous as well. That virtual to physical mapping that it does is also kind of slow, we could smush that together with other timings if we do it in parallel with twice the buffer space to compensate for it.
 
