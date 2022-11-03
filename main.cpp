@@ -211,7 +211,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 
 			bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, printf_pattern.data, stdinFileData[stdinFileDataPosition + chunk_indices]...);
 			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
-			stdinFileDataPosition += 8;
+			stdinFileDataPosition += bytes_per_chunk;
 			amountOfBufferFilled += bytesWritten;
 		}
 
@@ -271,13 +271,19 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 
 			bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, printf_pattern.data, stdinFileData[stdinFileDataPosition + chunk_indices]...);
 			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
-			stdinFileDataPosition += 8;
+			stdinFileDataPosition += bytes_per_chunk;
 			tempBuffer_head += bytesWritten;
 		}
 
 		std::memcpy(currentStdoutBuffer + amountOfBufferFilled, tempBuffer, tempBuffer_tail);
 
 		stdoutBufferMemorySpan_entireLength.iov_base = currentStdoutBuffer;
+		// TODO: Future improvement possibility:
+		// You could have a separate thread and have it run vmsplice when signalled by this thread.
+		// By doing the vmsplice call asynchronously, this code doesn't have to wait for vmsplice to
+		// finish translating vm to physical mem. That would make everything a little bit faster presumably (at least in situations where the entity
+		// reading our stdout is less of a bottleneck than we are).
+		// You would just have to replace each vmsplice call with a call to a custom function, not that hard.
 		if (vmsplice(STDOUT_FILENO, &stdoutBufferMemorySpan_entireLength, 1, SPLICE_F_MORE) == -1) {
 			REPORT_ERROR_AND_EXIT("vmsplice failed", EXIT_FAILURE);
 		}
@@ -659,8 +665,6 @@ void outputSource(const char* language) noexcept {
 
 	REPORT_ERROR_AND_EXIT("invalid language", EXIT_SUCCESS);
 }
-
-// TODO: Actually, consider making vm splice asynchronous as well. That virtual to physical mapping that it does is also kind of slow, we could smush that together with other timings if we do it in parallel with twice the buffer space to compensate for it.
 
 int main(int argc, const char* const * argv) noexcept {
 	// C++ standard I/O can suck it, it's super slow.
