@@ -216,6 +216,72 @@ namespace asyncio {
 			}
 		}
 
+		struct data_ptr_return_t {
+			const volatile char* data_ptr;
+			size_t size;
+		};
+
+		static data_ptr_return_t get_data_ptr(char* output_ptr, size_t output_size) noexcept {
+			if (buffer_stream_write_head_copy != nullptr) {
+				const volatile char* read_end_ptr = buffer_user_read_head + output_size;
+				if (read_end_ptr <= buffer_stream_write_head_copy) {
+					const volatile char* result = buffer_user_read_head;
+					buffer_user_read_head = read_end_ptr;
+					return { result, output_size };
+				}
+
+				const size_t amount_read = buffer_stream_write_head_copy - buffer_user_read_head;
+				const volatile char* result = buffer_user_read_head;
+				buffer_user_read_head = buffer_stream_write_head_copy;
+				return { result, amount_read };
+			}
+
+			const volatile char* current_buffer_end_ptr = buffer + buffer_size + (bool)empty_buffer * buffer_size;
+
+			const volatile char* read_end_ptr = buffer_user_read_head + output_size;
+			if (read_end_ptr < current_buffer_end_ptr) {
+				const volatile char* result = buffer_user_read_head;
+				buffer_user_read_head = read_end_ptr;
+				return { result, output_size };
+			}
+
+			const size_t orig_output_size = output_size;
+
+			while (true) {
+				std::copy(buffer_user_read_head, current_buffer_end_ptr, output_ptr);
+				const size_t full_space = current_buffer_end_ptr - buffer_user_read_head;
+				output_ptr += full_space;
+				output_size -= full_space;
+	
+				while (buffer_read_pending) { }
+
+				if (finalize_reader_thread) { return { nullptr, 0 }; }
+
+				buffer_stream_write_head_copy = buffer_stream_write_head;
+
+				buffer_read_pending = true;
+				empty_buffer = !empty_buffer;
+
+				buffer_user_read_head = buffer + (bool)empty_buffer * buffer_size;
+				current_buffer_end_ptr = buffer_user_read_head + buffer_size;
+
+				if (buffer_stream_write_head_copy != nullptr) {
+					const volatile char* read_end_ptr = minimum_value(buffer_user_read_head + output_size, buffer_stream_write_head_copy);
+					std::copy(buffer_user_read_head, read_end_ptr, output_ptr);
+					const size_t amount_read = read_end_ptr - buffer_user_read_head;
+					buffer_user_read_head = read_end_ptr;
+					return { output_ptr, orig_output_size - output_size + amount_read };
+				}
+
+				read_end_ptr = buffer_user_read_head + output_size;
+				if (read_end_ptr < current_buffer_end_ptr) {
+					std::copy(buffer_user_read_head, read_end_ptr, output_ptr);
+					buffer_user_read_head = read_end_ptr;
+					return { output_ptr, orig_output_size };
+				}
+			}
+		}
+
 		// NOTE: As of this moment, I'm standardizing the fact that calling this function more than once and/or calling the initialize() function after calling this function is UNDEFINED.
 		// REASON: for the former: implementation may change ; for the latter: that just straight up doesn't work, probably causes some undefined behavior somewhere or something.
 		static void dispose() noexcept {

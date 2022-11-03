@@ -469,14 +469,14 @@ bool dataMode_read_write() noexcept {
 	}
 #endif
 
-	unsigned char buffer[bytes_per_chunk];
+	char buffer[bytes_per_chunk];
 
 	// TODO: Change this note.
 	// NOTE: fread shouldn't ever return less than the wanted amount of bytes unless either:
 	// a) EOF
 	// b) an error occurred
 	// In this way, it is very different to the raw I/O (read and write).
-	int16_t bytesRead = stdin_stream::read((char*)buffer, 1);
+	int16_t bytesRead = stdin_stream::read(buffer, 1);
 	switch (bytesRead) {
 	case -1:
 		REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
@@ -484,24 +484,26 @@ bool dataMode_read_write() noexcept {
 		return false;
 	}
 
-	if (meta_printf_no_terminator(initial_printf_pattern.data, buffer[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
+	if (meta_printf_no_terminator(initial_printf_pattern.data, (unsigned char)buffer[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 
 	while (true) {
-		bytesRead = stdin_stream::read((char*)buffer, bytes_per_chunk);
+		//bytesRead = stdin_stream::read((char*)buffer, bytes_per_chunk);
 
-		if (bytesRead == bytes_per_chunk) {
-			if (meta_printf_no_terminator(printf_pattern.data, buffer[chunk_indices]...) < 0) {
+		stdin_stream::data_ptr_return_t data_ptr = stdin_stream::get_data_ptr(buffer, bytes_per_chunk);
+
+		if (data_ptr.size == bytes_per_chunk) {
+			if (meta_printf_no_terminator(printf_pattern.data, (unsigned char)data_ptr.data_ptr[chunk_indices]...) < 0) {
 				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}
 			continue;
 		}
 
-		if (bytesRead == -1) {
+		if (!data_ptr.data_ptr) {
 			REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE);
 		}
 
-		for (unsigned char i = 0; i < bytesRead; i++) {
-			if (meta_printf_no_terminator(single_printf_pattern.data, buffer[i]) < 0) {
+		for (unsigned char i = 0; i < data_ptr.size; i++) {
+			if (meta_printf_no_terminator(single_printf_pattern.data, (unsigned char)data_ptr.data_ptr[i]) < 0) {
 				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}
 		}
