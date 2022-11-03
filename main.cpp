@@ -180,7 +180,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 	size_t stdinFileDataPosition = 1;
 
 	int bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer, initial_printf_pattern.data, stdinFileData[0]);
-	if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
+	if (bytesWritten == -1) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 	size_t amountOfBufferFilled = bytesWritten;
 
 	while (true) {
@@ -188,7 +188,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 			if (stdinFileDataPosition > stdinFileDataCutoff) {
 				for (; stdinFileDataPosition < stdinFileSize; stdinFileDataPosition++) {
 					bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, single_printf_pattern.data, stdinFileData[stdinFileDataPosition]);
-					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
+					if (bytesWritten == -1) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					amountOfBufferFilled += bytesWritten;
 				}
 
@@ -210,7 +210,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 			}
 
 			bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, printf_pattern.data, stdinFileData[stdinFileDataPosition + chunk_indices]...);
-			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
+			if (bytesWritten == -1) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			stdinFileDataPosition += bytes_per_chunk;
 			amountOfBufferFilled += bytesWritten;
 		}
@@ -224,7 +224,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 			if (stdinFileDataPosition > stdinFileDataCutoff) {
 				for (; stdinFileDataPosition < stdinFileSize; stdinFileDataPosition++) {
 					bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, single_printf_pattern.data, stdinFileData[stdinFileDataPosition]);
-					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
+					if (bytesWritten == -1) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					tempBuffer_head += bytesWritten;
 				}
 
@@ -270,7 +270,7 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 			}
 
 			bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, printf_pattern.data, stdinFileData[stdinFileDataPosition + chunk_indices]...);
-			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
+			if (bytesWritten == -1) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			stdinFileDataPosition += bytes_per_chunk;
 			tempBuffer_head += bytesWritten;
 		}
@@ -302,16 +302,16 @@ bool dataMode_mmap_write(size_t stdinFileSize) noexcept {
 	const unsigned char* stdinFileData = mmapStdinFile(stdinFileSize);
 	if (stdinFileData == MAP_FAILED) { return false; }
 
-	if (meta_printf_no_terminator(initial_printf_pattern.data, stdinFileData[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
+	if (meta_printf_no_terminator(initial_printf_pattern.data, stdinFileData[0]) == -1) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 
 	size_t i;
 	for (i = 1; i < stdinFileSize + 1 - bytes_per_chunk; i += bytes_per_chunk) {
-		if (meta_printf_no_terminator(printf_pattern.data, stdinFileData[i + chunk_indices]...) < 0) {
+		if (meta_printf_no_terminator(printf_pattern.data, stdinFileData[i + chunk_indices]...) == -1) {
 			REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 		}
 	}
 	for (; i < stdinFileSize; i++) {
-		if (meta_printf_no_terminator(single_printf_pattern.data, stdinFileData[i]) < 0) {
+		if (meta_printf_no_terminator(single_printf_pattern.data, stdinFileData[i]) == -1) {
 			REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 		}
 	}
@@ -352,7 +352,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 	if (data_ptr.size == 0) { return DataTransferExitCode::NO_INPUT_DATA; }
 
 	int bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer, initial_printf_pattern.data, (uint8_t)data_ptr.data_ptr[0]);
-	if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }	// TODO: Change all these < 0 checks in the codebase to better checks, since our printf is more defined than the normal one.
+	if (bytesWritten == -1) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 	size_t amountOfBufferFilled = bytesWritten;
 
 	while (true) {
@@ -363,7 +363,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 			if (data_ptr.size < bytes_per_chunk) {
 				for (unsigned char i = 0; i < data_ptr.size; i++) {
 					bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, single_printf_pattern.data, (uint8_t)data_ptr.data_ptr[i]);
-					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
+					if (bytesWritten == -1) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					amountOfBufferFilled += bytesWritten;
 				}
 
@@ -383,7 +383,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 			}
 
 			bytesWritten = meta_sprintf_no_terminator(currentStdoutBuffer + amountOfBufferFilled, printf_pattern.data, (uint8_t)data_ptr.data_ptr[chunk_indices]...);
-			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
+			if (bytesWritten == -1) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			amountOfBufferFilled += bytesWritten;
 		}
 
@@ -395,7 +395,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 			if (data_ptr.size < bytes_per_chunk) {
 				for (unsigned char i = 0; i < data_ptr.size; i++) {
 					bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, single_printf_pattern.data, (uint8_t)data_ptr.data_ptr[i]);
-					if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
+					if (bytesWritten == -1) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 					tempBuffer_head += bytesWritten;
 				}
 
@@ -439,7 +439,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 			}
 
 			bytesWritten = meta_sprintf_no_terminator(tempBuffer + tempBuffer_head, printf_pattern.data, (uint8_t)data_ptr.data_ptr[chunk_indices]...);
-			if (bytesWritten < 0) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
+			if (bytesWritten == -1) { REPORT_ERROR_AND_EXIT("sprintf failed", EXIT_FAILURE); }
 			tempBuffer_head += bytesWritten;
 		}
 
@@ -482,13 +482,13 @@ bool dataMode_read_write() noexcept {
 	if (!data_ptr.data_ptr) { REPORT_ERROR_AND_EXIT("failed to read from stdin", EXIT_FAILURE); }
 	if (data_ptr.size == 0) { return false; }
 
-	if (meta_printf_no_terminator(initial_printf_pattern.data, (unsigned char)buffer[0]) < 0) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
+	if (meta_printf_no_terminator(initial_printf_pattern.data, (unsigned char)buffer[0]) == -1) { REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE); }
 
 	while (true) {
 		stdin_stream::data_ptr_return_t data_ptr = stdin_stream::get_data_ptr(buffer, bytes_per_chunk);
 
 		if (data_ptr.size == bytes_per_chunk) {
-			if (meta_printf_no_terminator(printf_pattern.data, (unsigned char)data_ptr.data_ptr[chunk_indices]...) < 0) {
+			if (meta_printf_no_terminator(printf_pattern.data, (unsigned char)data_ptr.data_ptr[chunk_indices]...) == -1) {
 				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}
 			continue;
@@ -499,7 +499,7 @@ bool dataMode_read_write() noexcept {
 		}
 
 		for (unsigned char i = 0; i < data_ptr.size; i++) {
-			if (meta_printf_no_terminator(single_printf_pattern.data, (unsigned char)data_ptr.data_ptr[i]) < 0) {
+			if (meta_printf_no_terminator(single_printf_pattern.data, (unsigned char)data_ptr.data_ptr[i]) == -1) {
 				REPORT_ERROR_AND_EXIT("failed to write to stdout", EXIT_FAILURE);
 			}
 		}
