@@ -457,7 +457,6 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 
 #endif
 
-// TODO: Start here with removing middle thing after testing speed.
 template <const auto& initial_printf_pattern, const auto& printf_pattern, const auto& single_printf_pattern, unsigned char... chunk_indices>
 bool dataMode_read_write() noexcept {
 	constexpr unsigned char bytes_per_chunk = sizeof...(chunk_indices);
@@ -472,6 +471,7 @@ bool dataMode_read_write() noexcept {
 
 	unsigned char buffer[bytes_per_chunk];
 
+	// TODO: Change this note.
 	// NOTE: fread shouldn't ever return less than the wanted amount of bytes unless either:
 	// a) EOF
 	// b) an error occurred
