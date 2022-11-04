@@ -106,14 +106,14 @@ ssize_t mmapWriteDoubleBuffer(char*& bufferA, char*& bufferB, size_t bufferSize)
 	if (bufferA == MAP_FAILED) { return mmap_write_double_buffer_simple(bufferA, bufferB, bufferSize); }
 
 	// Round up to nearest huge page boundary.
-	const size_t rounded_bufferSize = bufferSize + huge_page_size - ((bufferSize - 1) % huge_page_size) - 1;
-	// TODO: Is that the best way to do it? How would one do it in assembly?
+	const size_t rounded_bufferSize = bufferSize + huge_page_size - (((bufferSize - 1) % huge_page_size) + 1);
+	// NOTE: Sadly, the above rounding mechanism seems to be as efficient as we can get it. I reckon assembly could do it faster, the compiler will almost definitely optimize if that's the case.
 
 	bufferB = (char*)mmap(nullptr, rounded_bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
 	if (bufferB == MAP_FAILED) {
 		bufferB = (char*)mmap(nullptr, bufferSize, PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 		if (bufferB == MAP_FAILED) {
-			munmap(bufferA, rounded_bufferSize);		// TODO: Make sure this doesn't break anything.
+			munmap(bufferA, rounded_bufferSize);
 			return -1;
 		}
 	}
@@ -474,11 +474,6 @@ bool dataMode_read_write() noexcept {
 
 	char buffer[bytes_per_chunk];
 
-	// TODO: Change this note.
-	// NOTE: fread shouldn't ever return less than the wanted amount of bytes unless either:
-	// a) EOF
-	// b) an error occurred
-	// In this way, it is very different to the raw I/O (read and write).
 	stdin_stream::data_ptr_return_t data_ptr = stdin_stream::get_data_ptr(buffer, 1);
 	if (!data_ptr.data_ptr) { REPORT_ERROR_AND_EXIT("failed to read from stdin: stdin_stream:get_data_ptr failed", EXIT_FAILURE); }
 	if (data_ptr.size == 0) { return false; }
