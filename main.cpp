@@ -43,8 +43,11 @@ const char helpText[] = "usage: srcembed <--help> || ([--varname <variable name>
 				"\tc\n";
 
 [[noreturn]] void halt_program_no_cleanup(int exit_code) noexcept {
-	// TODO: See about doing something with the hlt instruction and such. Look at abort.c source code.
+	// NOTE: It would've been cool to do something with the halt instruction, even though it's not necessary, but that would be x86-specific.
+	// Seems unnecessary to reduce cross-platformity for basically no reason, since std::_Exit shouldn't fail.
 	std::_Exit(exit_code);
+	while (true) { }		// NOTE: If it does fail for some crazy reason, loop forever to prevent returning.
+	// NOTE: This will also keep CPU usage very high so someone looking at htop will know somethings wrong if the process was supposed to end but now it's at 100%.
 }
 
 template <size_t message_size>
@@ -149,6 +152,7 @@ consteval size_t calculate_max_printf_write_length(const char (&pattern)[pattern
 	return result;
 }
 
+// TODO: I can't find this anywhere online, are function parameters aligned to their natural alignment when they are passed (assuming they are passed on the stack)?
 template <const auto& initial_printf_pattern, const auto& printf_pattern, const auto& single_printf_pattern, unsigned char... chunk_indices>
 DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 	constexpr size_t max_printf_write_length = calculate_max_printf_write_length(printf_pattern.data);
@@ -161,7 +165,27 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 	stdoutBufferMemorySpan_entireLength.iov_len = stdoutPipeBufferSize;
 	struct iovec stdoutBufferMemorySpan;
 
-	// NOTE: We separate buffers to avoid cache contention. TODO: Figure out how that works.
+	// NOTE: We separate buffers to avoid cache contention.
+	/*
+	   It works like this as far as I understand at the moment:
+	   	- if we just did "char stdoutBuffers[stdoutPipeBufferSize * 2]", that wouldn't be as efficient since
+			the stack-frame itself isn't guaranteed to be aligned to a cacheline (it's alignment is standardized most of the time I think, but it depends on the architecture and defo isn't 64 bytes).
+			Even if it were, the previous variable declarations would mess it up anyway for us. Basically, what I'm saying is "stdoutBuffers" wouldn't be aligned to a cacheline most of the time.
+				- That would cause more cache lines to be used than necessary, but it would also cause one cacheline to straddle the junction between the two buffers, which is bad.
+				--> we give one buffer at a time to the kernel, which gets played with from a different thread I believe, so it wouldn't be uncommon that the straddling cacheline
+					is pulled into two different caches at the same time ---> CACHE CONTENTION!
+					--> Not good because now both threads have to do complex locking stuff just to avoid stepping on eachother's toes when writing to the cache line. At least that would be logical.
+
+		- obviously this would not be a concern if char was 64 bytes big (size of cache line, at least thats what I'm assuming for this example), since then the alignment would be forced, but it isn't.
+		- to avoid all this, we put two pointers on the stack and have mmap allocate our buffers for us. They will probably be right after one another in memory in the case of this program, but that doesn't matter.
+			--> the point is that they will be aligned to at least the cache boundaries (since they will both start at page starts, which are definitely sufficiently aligned)
+				--> this means efficient cache usage but ALSO THAT NO CACHELINES WILL STRADDLE THE BUFFERS, so we can rest easy.
+
+		// NOTE: I admit, we could have just had one pointer in this case and allocate everything with one mmap call, since that would probably still have aligned to cachlines properly.
+		// But I think this system is better anyway since if the user was ever stupid enough to make the buffers weird non-powers-of-two sizes, this would mitigate the damage by still preventing cache contention,
+		// whereas the one pointer method would not.
+		// I don't even know if the one pointer method would work since vmsplice might require page-aligned memory input or something.
+	*/
 	char* stdoutBuffers[2];
 
 	const ssize_t actual_pipe_buffer_size = mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutPipeBufferSize);
@@ -333,7 +357,6 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 	stdoutBufferMemorySpan_entireLength.iov_len = stdoutPipeBufferSize;
 	struct iovec stdoutBufferMemorySpan;
 
-	// NOTE: We separate buffers to avoid cache contention. TODO: Figure out how that works.
 	char* stdoutBuffers[2];
 
 	const ssize_t actual_pipe_buffer_size = mmapWriteDoubleBuffer(stdoutBuffers[0], stdoutBuffers[1], stdoutPipeBufferSize);
@@ -427,7 +450,7 @@ DataTransferExitCode dataMode_read_vmsplice() noexcept {
 					REPORT_ERROR_AND_EXIT("failed to output to stdout: vmsplice failed", EXIT_FAILURE);
 				}
 
-				// TODO: It's ok to munmap after vmsplice with GIFT right? I'm highly certain but check to make sure.
+				// NOTE: munmap after SPLICE_F_GIFT is okay, don't worry.
 				if (munmap(stdoutBuffers[0], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 				if (munmap(stdoutBuffers[1], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
