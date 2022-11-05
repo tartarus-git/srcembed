@@ -6,7 +6,7 @@
 
 using sioret_t = ssize_t;
 
-#define crossplatform_read(fd, buf, count) ::read(fd, buf, count)
+#define crossplatform_read(fd, buf, count) ::read(fd, buf, count)		// TODO: You could turn these into functions, although macros work as well here.
 #define crossplatform_write(fd, buf, count) ::write(fd, buf, count)
 
 #else
@@ -23,8 +23,8 @@ using sioret_t = int;
 
 using ssize_t = typename std::make_signed<size_t>::type;
 
-#define crossplatform_read(fd, buf, count) ::read(fd, buf, count)
-#define crossplatform_write(fd, buf, count) ::write(fd, buf, count)
+#define crossplatform_read(fd, buf, count) ::_read(fd, buf, count)
+#define crossplatform_write(fd, buf, count) ::_write(fd, buf, count)
 
 #endif
 

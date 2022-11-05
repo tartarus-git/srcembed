@@ -21,9 +21,9 @@ using stdout_stream = asyncio::stdout_stream<65536>;
 
 #include "meta_printf.h"	// for compile-time printf
 
-#include "meminfo_parser.h"	// for getting huge page size from /proc/meminfo
-
 #ifndef PLATFORM_WINDOWS
+
+#include "meminfo_parser.h"	// for getting huge page size from /proc/meminfo
 
 const long pagesize = sysconf(_SC_PAGE_SIZE);
 
