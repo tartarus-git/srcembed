@@ -18,7 +18,6 @@
 inline bool is_char_invisible(char input) noexcept {
 	switch (input) {
 		case '\0':
-			// TODO: Might be more cases look at ASCII table.
 			return true;
 		default:
 			return false;
@@ -30,7 +29,6 @@ inline bool is_char_preamble(char input) noexcept {
 		case '\n':
 		case ' ':
 		case ';':
-			// TODO: Might be more cases think about it and look at ASCII table.
 			return true;
 		default:
 			return false;
@@ -42,14 +40,12 @@ inline bool is_char_skippable(char input) noexcept {
 	case ' ':
 	case ':':
 	case '\t':
-	// TODO: Maybe there are a couple more cases to consider, look at the ASCII table and find out.
 		return true;
 	default:
 		return false;
 	}
 }
 
-// TODO: You could have used this method for meta_printf no?
 constexpr char huge_page_size_key[] = "Hugepagesize";
 
 // Pretty efficient parser that finds the huge_page_size_key string and then parses out the value that follows it.

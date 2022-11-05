@@ -24,11 +24,17 @@ namespace meta {
 	// 	- you can accept the const char (&)[N] (and also const char*) as args of constexpr/consteval functions.
 	//		- this works with string literals, because the type can't be messed up like above, so the language is ok with it.
 	//		- this works and has the added bonus that you can use template arg deduction to figure out the length of the char array.
-	// 		- PROBLEM: You can't pass the args into nested-functions because the args aren't considered constant expressions.
+	//		- PROBLEM: You can't pass the args into template args because the function args aren't considered constant expressions.
 	//			(super interesting, for reasoning see below somewhere)
-	//	- The only practical alternative that is left open to you is to put an array in a struct and pass that around by value
-	//	within the template args. If you don't plan on passing text to nested functions you can also accept it in function args of constexpr
+	//		--> interestingly, you can pass the args into other consteval/constexpr functions, since those functions don't have to evaluate to constant expressions inside other consteval/constexpr functions.
+	//	- The only practical alternative that is left open to you is to put an array in a struct and pass that around by reference
+	//	within the template args. If you don't plan on passing text to template args you can also accept it in function args of constexpr
 	//	or consteval function as mentioned above.
+	//	- There might also be another option, I haven't tested this though, it should work though:
+	//		Simply initialize a static constexpr char[] with a string literal and pass a pointer to the start of it into the template args, they should be able to accept that.
+	//		--> slightly more annoying to work with since you have to pass the size of the string in along side the pointer
+	//		--> AFAIK this wouldn't even be faster since we're passing the struct from before by reference, not value, so it's not better than the struct version.
+	//	--> for simplicity's sake I think the struct version is probably the best.
 
 	template <typename data_type, size_t length>
 	struct meta_array {
@@ -305,7 +311,7 @@ namespace meta {
 		consteval auto create_program() {
 			/*
 			   SUPER IMPORTANT NOTE ABOUT CONSTEVAL TYPE STUFF:
-			   	- the arguments of constexpr/consteval functions aren't considered constant expressions the avoid the following:
+			   	- the arguments of constexpr/consteval functions aren't considered constant expressions to avoid the following:
 					- if they were constant expressions, you could use them as template args, thereby making
 						the type of something dependant on the function args.
 					- imagine a function that returns different types based on the given set of function args
@@ -327,7 +333,7 @@ namespace meta {
 					- the result of a consteval/constexpr function isn't always constant expression,
 						only when the args are constant expression
 					- so basically, inside a consteval/constexpr function, you can't use the result of a nested
-						consteval/constexpr function for a template arg
+						consteval/constexpr function for a template arg unless the arguments to that function are all constant expressions
 					- you CAN however use the result of a top-level consteval/constexpr function as template arg
 					---> super interesting!
 
