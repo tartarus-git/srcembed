@@ -731,3 +731,5 @@ int main(int argc, const char* const * argv) noexcept {
 	stdin_stream::dispose();
 	stdout_stream::dispose();
 }
+
+// TODO: Why is it that this pipeline: yes | cpipe -vt | ./bin/srcembed c++ | cat > /dev/null is faster than this pipeline: yes | cpipe -vt | ./bin/srcembed c++ > /dev/null?
