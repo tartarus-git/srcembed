@@ -361,6 +361,7 @@ namespace meta {
 				// PROBLEM: The problem of whether a set of args exists that is compile-time is not easy to solve.
 				// There are situations where it is practically unsolvable. In that case I assume the compiler doesn't let
 				// you finish compilation even if there theoretically is a route where compile-time evaluation is possible.
+				// Unless of course you call it from somewhere with the exact parameters required for compile-time and the compiler can check that, then compilation would probably still work I guess.
 				// TODO: Research this and see what actually happens.
 
 				// NOTE: The above method was used when exceptions were enabled. With -fno-exceptions, the compiler doesn't let us
@@ -427,7 +428,7 @@ namespace meta {
 		}
 
 		consteval auto generate_uint8_string_lookup_list() {
-			meta_byte_array<256 * 4> result { };		// TODO: Change this to meta_string.
+			meta_string<256 * 4> result { };
 			for (uint16_t i = 0, true_index = 0; i < 256; i++, true_index += 4) {
 				uint8_t blank_space = 4;
 				uint16_t value = i;
@@ -446,7 +447,7 @@ namespace meta {
 		constexpr void output_uint8(outputter_t& outputter, uint8_t input) {
 			uint16_t lookup_index = input * 4;
 			uint8_t blank_space = uint8_string_lookup_list[lookup_index];
-			outputter.copy_input_from_ptr((const char*)&uint8_string_lookup_list[lookup_index + blank_space], 4 - blank_space);
+			outputter.copy_input_from_ptr(&uint8_string_lookup_list[lookup_index + blank_space], 4 - blank_space);
 		}
 
 		template <const auto& program, size_t operation_index, bool write_nul_terminator, typename outputter_t>
@@ -486,14 +487,15 @@ namespace meta {
 			else if constexpr (program[operation_index].type == op_type_t::UINT8) {
 				// NOTE: The condition below cannot be straight false because then the static_assert fires on every build,
 				// no matter what.
-				// This is because code in the false segments of constexpr if's is still parsed and analysed and such,
+				// This is because the pre-instantiation AST in the false segments of constexpr if's is still analysed and such,
 				// presumably to avoid letting coding mistakes slip through in the false branches of these if's.
 				// Along with a couple other specific things, the main guarantee of constexpr if is that
 				// the false branches are not instantiated when the template (if one is present) is instantiated.
 				// Types are still checked for things that are not template dependant, and static_asserts that are not
 				// template dependant still fire. That's why we need the condition to be template dependant.
 				// TODO: Idk if I like the static_assert behaviour with the false in it, ask about it and discuss and such.
-				static_assert(operation_index == operation_index + 1, "meta_printf invalid: blueprint requires input arguments");
+				// They should've made two separate static_assert's, one that triggers before template instantiation and one that triggers after.
+				static_assert(operation_index == operation_index + 1, "meta_printf invalid: blueprint requires more input arguments");
 			}
 		}
 
@@ -516,7 +518,7 @@ namespace meta {
 			else if constexpr (program[operation_index].type == op_type_t::UINT8) {
 				// NOTE: One could make this more flexible by allowing non-narrowing conversions for example,
 				// but I'm gonna pass on that for now, so that the code is more explicit.
-				static_assert(std::is_same<first_arg_type, uint8_t>{}, "meta_printf failed: one or more input args have incorrect types");
+				static_assert(std::is_same<first_arg_type, uint8_t>{}, "meta_printf invalid: one or more input args have incorrect types");
 				output_uint8(outputter, first_arg);
 				return execute_program<program, operation_index + 1, write_nul_terminator>(outputter, rest_args...);
 			}
