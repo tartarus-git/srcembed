@@ -478,7 +478,7 @@ bool dataMode_read_write() noexcept {
 	if (!data_ptr.data_ptr) { REPORT_ERROR_AND_EXIT("failed to read from stdin: stdin_stream:get_data_ptr failed", EXIT_FAILURE); }
 	if (data_ptr.size == 0) { return false; }
 
-	if (meta_printf_no_terminator(initial_printf_pattern.data, (unsigned char)buffer[0]) == -1) { REPORT_ERROR_AND_EXIT("failed to output to stdout: meta_printf_no_terminator failed", EXIT_FAILURE); }
+	if (meta_printf_no_terminator(initial_printf_pattern.data, (unsigned char)data_ptr.data_ptr[0]) == -1) { REPORT_ERROR_AND_EXIT("failed to output to stdout: meta_printf_no_terminator failed", EXIT_FAILURE); }
 
 	while (true) {
 		stdin_stream::data_ptr_return_t data_ptr = stdin_stream::get_data_ptr(buffer, bytes_per_chunk);
@@ -559,12 +559,13 @@ use_data_mode_read_vmsplice:
 // SIDE-NOTE: No reinterpret_cast's allowed in constant expressions, seems restrictive, and it is, but it's got a pretty reasonable explanation.
 template <const auto& single_printf_pattern, unsigned char... chunk_indices>
 consteval auto generate_chunked_printf_pattern() {
-	meta::meta_string<sizeof...(chunk_indices) * sizeof(single_printf_pattern)> result;
-	for (size_t i = 0; i < sizeof(result); i += sizeof(single_printf_pattern)) {
-		for (size_t j = 0; j < sizeof(single_printf_pattern); j++) {
+	meta::meta_string<sizeof...(chunk_indices) * (sizeof(single_printf_pattern) - 1) + 1> result;
+	for (size_t i = 0; i < sizeof(result) - 1; i += sizeof(single_printf_pattern) - 1) {
+		for (size_t j = 0; j < sizeof(single_printf_pattern) - 1; j++) {
 			result[i + j] = single_printf_pattern[j];
 		}
 	}
+	result[sizeof(result) - 1] = '\0';
 	return result;
 }
 

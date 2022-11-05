@@ -187,7 +187,7 @@ namespace meta {
 		public:
 			void copy_input_from_ptr(const char* ptr, size_t size) noexcept {
 				if (amount_of_bytes_written == -1) { return; }
-				if (!stdout_stream::write(ptr, size)) { amount_of_bytes_written = -1; }
+				if (!stdout_stream::write(ptr, size)) { amount_of_bytes_written = -1; return; }
 				amount_of_bytes_written += size;
 			}
 
@@ -197,12 +197,12 @@ namespace meta {
 
 			void write_single_byte_no_increment(char byte) noexcept {
 				if (amount_of_bytes_written == -1) { return; }
-				if (fputc(byte, stdout) == EOF) { amount_of_bytes_written = -1; }
+				if (!stdout_stream::write(&byte, sizeof(byte))) { amount_of_bytes_written = -1; }
 			}
 
 			void write_single_byte(char byte) noexcept {
 				write_single_byte_no_increment(byte);
-				amount_of_bytes_written++;
+				if (amount_of_bytes_written != -1) { amount_of_bytes_written++; }
 			}
 
 			// NOTE: Be careful with this, if both instances have error set, then this will return 0 and not -1 like expected.
@@ -427,7 +427,7 @@ namespace meta {
 		}
 
 		consteval auto generate_uint8_string_lookup_list() {
-			meta_byte_array<256 * 4> result { };
+			meta_byte_array<256 * 4> result { };		// TODO: Change this to meta_string.
 			for (uint16_t i = 0, true_index = 0; i < 256; i++, true_index += 4) {
 				uint8_t blank_space = 4;
 				uint16_t value = i;
