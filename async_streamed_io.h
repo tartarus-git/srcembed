@@ -6,6 +6,12 @@
 
 #include "crossplatform_io.h"
 
+#ifndef PLATFORM_WINDOWS
+
+#include <fcntl.h>
+
+#endif
+
 namespace asyncio {
 
 	enum class buffer_position_t : bool {
@@ -71,9 +77,11 @@ namespace asyncio {
 
 				sioret_t bytes_read = crossplatform_read(STDIN_FILENO, (char*)buf, count);
 				if (bytes_read == -1) {
+#ifndef PLATFORM_WINDOWS
 					if (errno == EAGAIN || errno == EWOULDBLOCK) {		// NOTE: Branch predictor should essentially never fail here, making this super duper fast!
 						continue;
 					}
+#endif
 					return -3;
 				}
 				if (bytes_read == 0) { return buf - original_buf_ptr; }
@@ -125,9 +133,11 @@ namespace asyncio {
 	public:
 		// NOTE: Calling this function more than once is super duper UNDEFINED!
 		static bool initialize() noexcept {
+#ifndef PLATFORM_WINDOWS
 			int stdin_fd_flags = fcntl(STDIN_FILENO, F_GETFL);
 			if (stdin_fd_flags == -1) { return false; }
 			if (fcntl(STDIN_FILENO, F_SETFL, stdin_fd_flags | O_NONBLOCK) == -1) { return false; }
+#endif
 
 			const sioret_t read_result = read_full_buffer(buffer, buffer_size);
 			switch (read_result) {
@@ -287,6 +297,7 @@ namespace asyncio {
 		static void dispose() noexcept {
 			if (reader_thread.joinable()) {
 				finalize_reader_thread = true;
+				// NOTE: This may look wrong, but I assure you it isn't.
 				empty_buffer = !empty_buffer;
 				reader_thread.join();
 			}
@@ -426,6 +437,7 @@ namespace asyncio {
 		// NOTE: Calling this function more than once is UNDEFINED as per my standard for this header.
 		static bool dispose() noexcept {
 			if (!flush()) { return false; }
+			// NOTE: This may look wrong, but I assure you it is not.
 			finalize_flusher_thread = true;
 			full_buffer = !full_buffer;
 			flusher_thread.join();
