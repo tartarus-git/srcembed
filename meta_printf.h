@@ -541,7 +541,7 @@ namespace meta {
 
 // We have to use static constexpr variable here because binding non-static constexpr to template non-type doesn't work since the address of the variable could potentially be run-time dependant.
 // static makes the variable be located in some global memory, which (as far as the binary file is concerned) has constant addresses.
-#define meta_print_to_outputter(outputter, blueprint, write_nul_terminator, ...) [&]() { static constexpr auto meta_printf_blueprint = meta::construct_meta_string(blueprint); static constexpr auto program = meta::printf::create_program<meta_printf_blueprint>(); return meta::printf::execute_program<program, 0, write_nul_terminator>(outputter __VA_OPT__(,) __VA_ARGS__) - outputter; }()
+#define meta_print_to_outputter(outputter, blueprint, write_nul_terminator, ...) [&]() { static constexpr auto meta_printf_blueprint = meta::construct_meta_string(blueprint); static constexpr auto program = meta::printf::create_program<meta_printf_blueprint>(); return meta::printf::execute_program<program, 0, write_nul_terminator>(outputter, __VA_ARGS__) - outputter; }()
 // NOTE: We enclose the macro body in a lambda so that it may return a value in a nice stable fashion.
 // NOTE: Also, the scope of the lambda allows us to use the macro multiple times without initialization issues with the static variables.
 // NOTE: We could achieve this as well using simple scope brackets ("{ ... }"), but like I said, we want to return things.
@@ -557,7 +557,7 @@ namespace meta {
 #define meta_printf(blueprint, ...) meta_print_to_outputter(meta::printf::stdout_output, blueprint, true __VA_OPT__(,) __VA_ARGS__)
 
 #define meta_sprintf_no_terminator(buffer, blueprint, ...) [&]() { meta::printf::memory_outputter mem_output(buffer); return meta_print_to_outputter(mem_output, blueprint, false __VA_OPT__(,) __VA_ARGS__); }()
-#define meta_printf_no_terminator(blueprint, ...) meta_print_to_outputter(meta::printf::stdout_output, blueprint, false __VA_OPT__(,) __VA_ARGS__)
+#define meta_printf_no_terminator(blueprint, ...) meta_print_to_outputter(meta::printf::stdout_output, blueprint, false, __VA_ARGS__)
 
 // NOTE: Technically, printf functions return ints, and I should definitely make my implementation more conformant to the standard if/when I make a general purpose meta_printf.
 // Right now, returning std::ptrdiff_t is fine.
