@@ -229,7 +229,6 @@ DataTransferExitCode dataMode_mmap_vmsplice(size_t stdinFileSize) noexcept {
 				if (munmap((unsigned char*)stdoutBuffers[0], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 				if (munmap((unsigned char*)stdoutBuffers[1], actual_pipe_buffer_size) == -1) { REPORT_ERROR_AND_EXIT("failed to munmap stdout buffer", EXIT_FAILURE); }
 
-
 				return DataTransferExitCode::SUCCESS;
 			}
 
@@ -578,8 +577,11 @@ use_data_mode_read_vmsplice:
 	return dataMode_read_write<initial_printf_pattern, printf_pattern, single_printf_pattern, chunk_indices...>();
 }
 
-// TODO: Convert all these types to fixed width types
-// SIDE-NOTE: No reinterpret_cast's allowed in constant expressions, seems restrictive, and it is, but it's got a pretty reasonable explanation.
+// SIDE-NOTE: No reinterpret_cast's allowed in constant expressions, seems restrictive, and it is, but it's got a pretty reasonable explanation:
+// 		--> reinterpretation relies on how the types are represented, which is implementation defined in a lot of cases AFAIK.
+//		--> you could standardize the way they look when running consteval functions, but that would mean that they would look one way
+//			in the rest of your code and another in the consteval functions, which is probably why they didn't do that.
+//		--> not to mention it would complicate the writing of constexpr functions, since the behaviour could change between runtime and compile-time.
 template <const auto& single_printf_pattern, unsigned char... chunk_indices>
 consteval auto generate_chunked_printf_pattern() {
 	meta::meta_string<sizeof...(chunk_indices) * (sizeof(single_printf_pattern) - 1) + 1> result;
@@ -729,6 +731,3 @@ int main(int argc, const char* const * argv) noexcept {
 	stdin_stream::dispose();
 	stdout_stream::dispose();
 }
-
-// TODO: After looking at the assembly, it seems that std::copy internally used memmove (I think) inside of sprintf. This however, did not get inlined, which seems like a huge overhead considering it's inside a super tight loop.
-// Try rolling your own copy algorithm (simple for loop, compiler should optimize if necessary) and see if the avoided function call makes your code faster.
