@@ -61,7 +61,7 @@ inline ssize_t parse_huge_page_size_from_meminfo_file() noexcept {
 	uint8_t j = 0;
 	while (true) {
 		bytes_read = read_entire_buffer(fd, buffer, sizeof(buffer)); 
-		if (bytes_read <= 0) { return -1; }
+		if (bytes_read <= 0) { close(fd); return -1; }
 
 		// NOTE: If you were looking for the string "bbba" and the junction looked like this "bb|bba",
 		// parsing would fail since it can't move i back to before the junction after crossing the junction.
@@ -84,7 +84,7 @@ inline ssize_t parse_huge_page_size_from_meminfo_file() noexcept {
 					i++;
 					if (i == bytes_read) {
 						bytes_read = read_entire_buffer(fd, buffer, sizeof(buffer)); 
-						if (bytes_read <= 0) { return -1; }
+						if (bytes_read <= 0) { close(fd); return -1; }
 						i = 0;
 					}
 				}
@@ -99,7 +99,7 @@ inline ssize_t parse_huge_page_size_from_meminfo_file() noexcept {
 					i++;
 					if (i == bytes_read) {
 						bytes_read = read_entire_buffer(fd, buffer, sizeof(buffer)); 
-						if (bytes_read <= 0) { return -1; }
+						if (bytes_read <= 0) { close(fd); return -1; }
 						i = 0;
 					}
 				} while (is_char_invisible(buffer[i]));
@@ -117,7 +117,7 @@ noop_loop:
 		}
 
 		bytes_read = read_entire_buffer(fd, buffer, sizeof(buffer)); 
-		if (bytes_read <= 0) { return -1; }
+		if (bytes_read <= 0) { close(fd); return -1; }
 		i = 0;
 	}
 
@@ -130,11 +130,11 @@ value_parse_loop:
 		i++;
 		if (i == bytes_read) {
 			bytes_read = read_entire_buffer(fd, buffer, sizeof(buffer)); 
-			if (bytes_read == 0) { return result; }
-			if (bytes_read == -1) { return -1; }
+			if (bytes_read == 0) { close(fd); return result; }
+			if (bytes_read == -1) { close(fd); return -1; }
 			i = 0;
 		}
 		digit = (unsigned char)buffer[i] - '0';
-		if (digit > '9') { return result * 1024; }
+		if (digit > '9') { close(fd); return result * 1024; }
 	}
 }
