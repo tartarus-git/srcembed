@@ -123,17 +123,18 @@ noop_loop:
 
 value_parse_loop:
 	size_t result = 0;
+	// NOTE: AVOIDING SIGNED OVERFLOW, BECAUSE IT'S UNDEFINED!
+	unsigned char digit = (unsigned char)buffer[i] - '0';
 	while (true) {
-		while (true) {
-			result = result * 10 + (buffer[i] - '0');
-			i++;
-			if (i == bytes_read) { break; }
-			if (buffer[i] < '0' || buffer[i] > '9') { return result * 1024; }
+		result = result * 10 + digit;
+		i++;
+		if (i == bytes_read) {
+			bytes_read = read_entire_buffer(fd, buffer, sizeof(buffer)); 
+			if (bytes_read == 0) { return result; }
+			if (bytes_read == -1) { return -1; }
+			i = 0;
 		}
-
-		bytes_read = read_entire_buffer(fd, buffer, sizeof(buffer)); 
-		if (bytes_read == 0) { return result; }
-		if (bytes_read == -1) { return -1; }
-		i = 0;
+		digit = (unsigned char)buffer[i] - '0';
+		if (digit > '9') { return result * 1024; }
 	}
 }
